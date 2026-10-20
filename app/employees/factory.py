@@ -1,0 +1,155 @@
+"""Builds an isolated Employee runtime (plan Phase 2).
+
+Each employee gets its **own** world:
+
+    data/employees/<key>/
+        sage.db        — its own messages / session / tasks
+        memory.md      — its own curated facts
+        workspace/     — its own cwd for file & shell tools
+
+The filtered tool registry is the existing SAGE registry, restricted to
+tools marked `employee_eligible`. The employee reuses the same
+`ConversationLoop`, `PermissionEngine`, and inference as SAGE — only the
+*state* and *workspace* are separate.
+"""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+from app.config import settings
+from app.context.builder import ContextBuilder
+from app.context.compressor import ContextCompressor
+from app.conversation.loop import ConversationLoop
+from app.employees.budgets import Budget
+from app.employees.employee import Employee
+from app.employees.roster import EmployeeSpec, ROSTER, get as get_spec
+from app.execution.engine import ExecutionEngine
+from app.inference.manager import InferenceManager
+from app.inference.models import ModelRequirements
+from app.inference.router import ModelRouter
+from app.memory.store import MemoryStore
+from app.permissions.approvals import ApprovalManager
+from app.permissions.engine import PermissionEngine
+from app.persistence.database import Database
+from app.persistence.schema import initialize_schema
+from app.persistence.store import MessageStore, SessionStateStore
+from app.tools.registry import ToolRegistry
+
+logger = logging.getLogger(__name__)
+
+ROLE_CARDS_DIR = Path(__file__).parent / "roles"
+
+
+def employee_root(key: str) -> Path:
+    return Path(settings.database_path).parent / "employees" / key
+
+
+def _filter_registry(source: ToolRegistry) -> ToolRegistry:
+    """A registry containing only employee-eligible tools.
+
+    Tools are shared by reference (same handlers); the *set* is what
+    differs per employee. Per-employee tool allowlists can layer on top.
+    """
+
+    filtered = ToolRegistry()
+    for tool in source.list():
+        if getattr(tool, "employee_eligible", False):
+            filtered.register(tool)
+    return filtered
+
+
+def _load_role_card(key: str) -> str:
+    path = ROLE_CARDS_DIR / f"{key}.md"
+    if path.exists():
+        return path.read_text(encoding="utf-8").strip()
+    # Fallback role card so an employee without a bespoke card still works.
+    return (
+        "You are an employee working under SAGE. Complete the assigned "
+        "objective using your tools, then return a concise result. Do not "
+        "address the user directly."
+    )
+
+
+async def build_employee(
+    worker: str | EmployeeSpec,
+    *,
+    inference_manager: InferenceManager,
+    model_registry,
+    source_registry: ToolRegistry,
+    permission_engine: PermissionEngine,
+    budget: Budget | None = None,
+) -> Employee:
+    """Construct a fully isolated Employee.
+
+    The employee's `Database` is opened and schema-initialized here; the
+    caller (Supervisor) owns its lifecycle and should `close_employee`
+    when done. In practice employees stay constructed for the session.
+    """
+
+    spec = worker if isinstance(worker, EmployeeSpec) else get_spec(worker)
+
+    root = employee_root(spec.key)
+    workspace = root / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    database = Database(root / "sage.db")
+    await database.connect()
+    await initialize_schema(database)
+
+    message_store = MessageStore(database)
+    session_state = SessionStateStore(database)
+    memory_store = MemoryStore(root / "memory.md")
+
+    registry = _filter_registry(source_registry)
+    execution_engine = ExecutionEngine(registry)
+    approval_manager = ApprovalManager(database)
+
+    router = ModelRouter(model_registry)
+    primary = router.route(ModelRequirements(tool_calling=True))
+    compressor = ContextCompressor(
+        inference_manager=inference_manager,
+        session_state=session_state,
+        context_window=primary.metadata.context_window,
+        threshold_ratio=settings.compaction_threshold_ratio,
+    )
+
+    role_card = _load_role_card(spec.key)
+    context_builder = ContextBuilder(
+        message_store=message_store,
+        session_state=session_state,
+        compressor=compressor,
+        system_prompt=role_card,
+        history_fetch_limit=settings.history_fetch_limit,
+        memory_store=memory_store,
+    )
+
+    loop = ConversationLoop(
+        inference_manager=inference_manager,
+        tool_registry=registry,
+        permission_engine=permission_engine,
+        execution_engine=execution_engine,
+        approval_manager=approval_manager,
+        message_store=message_store,
+        context_builder=context_builder,
+        compressor=compressor,
+        max_iterations=settings.max_iterations,
+        max_tool_result_chars=settings.max_tool_result_chars,
+    )
+
+    # Keep a handle so the supervisor can close the DB later.
+    employee = Employee(
+        spec=spec,
+        workspace=workspace,
+        loop=loop,
+        budget=budget or Budget(),
+    )
+    setattr(employee, "_database", database)
+    return employee
+
+
+async def close_employee(employee: Employee) -> None:
+    database = getattr(employee, "_database", None)
+    if database is not None:
+        await database.close()
