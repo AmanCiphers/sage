@@ -96,32 +96,12 @@ def detect_shell_metacharacters(command: str) -> bool:
 
 
 def is_read_only_command(command: str) -> bool:
+    """Check if a command is on the read-only allowlist.
+
+    Delegates to the single authoritative policy in
+    ``app.permissions.command_policy`` so the engine, the shell tool, and
+    the builtin tools can never disagree about what is safe to run inline.
     """
-    Check if a command is on the read-only allowlist.
-    These are simple, safe commands that never need approval.
-    """
-    if not command or not isinstance(command, str):
-        return False
+    from app.permissions.command_policy import is_read_only_command as _policy
 
-    # Normalize
-    parts = command.strip().split()
-    if not parts:
-        return False
-
-    # Allowed read-only commands (first token only, no args with metacharacters)
-    READ_ONLY_COMMANDS = {
-        'ls', 'cat', 'head', 'tail', 'less', 'more', 'grep', 'egrep', 'fgrep',
-        'find', 'stat', 'file', 'which', 'whereis', 'type',
-        'pwd', 'whoami', 'id', 'date', 'uptime', 'df', 'du', 'free',
-        'ps', 'top', 'htop', 'netstat', 'ss', 'lsof',
-        'git', 'git status', 'git log', 'git diff', 'git show', 'git branch',
-        'python', 'python3', 'python -c', 'node', 'node -e',
-    }
-
-    # Check exact match or prefix (e.g., "git status" matches "git")
-    for allowed in READ_ONLY_COMMANDS:
-        if command.startswith(allowed):
-            # Additional safety: no shell metacharacters anywhere in command
-            return not detect_shell_metacharacters(command)
-
-    return False
+    return _policy(command)

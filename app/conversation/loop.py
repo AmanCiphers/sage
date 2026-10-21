@@ -317,7 +317,9 @@ class ConversationLoop:
             return self._tool_error(f"Unknown tool: {name}"), None
 
         # SAGE authority: deterministic permission check, never the LLM.
-        decision = self.permission_engine.check(tool)
+        # Pass the parsed arguments so argument-sensitive fast paths work
+        # (e.g. run_command with a read-only command like `git status`).
+        decision = self.permission_engine.check(tool, arguments)
 
         # Dynamic hook: e.g. writing an existing file needs consent even
         # though the tool itself is not statically destructive.
