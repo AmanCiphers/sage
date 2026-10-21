@@ -95,11 +95,11 @@ async def analyze(paths: list[str], objective: str) -> str:
     """  # noqa: W293
     from pathlib import Path
 
-    from app.config import settings
     from app.tools.file_tools import list_files, read_file
+    from app.tools.workspace import current_workspace
 
     results = []
-    workspace = settings.workspace_path.expanduser().resolve()
+    workspace = current_workspace()
     project_root = Path(__file__).resolve().parents[2]
 
     for path_str in paths:

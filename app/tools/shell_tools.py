@@ -19,11 +19,11 @@ class RunCommandInput(ToolInput):
 
 
 async def run_command(command: str, timeout_seconds: int = 30) -> str:
-    """Run a shell command in the SAGE workspace with a hard timeout."""
+    """Run a shell command in the current workspace with a hard timeout."""
 
-    from app.config import settings
+    from app.tools.workspace import current_workspace
 
-    workspace = settings.workspace_path.expanduser().resolve()
+    workspace = current_workspace()
     workspace.mkdir(parents=True, exist_ok=True)
 
     timeout_seconds = max(1, min(timeout_seconds, MAX_TIMEOUT_SECONDS))

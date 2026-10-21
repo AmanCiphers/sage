@@ -42,6 +42,11 @@ logger = logging.getLogger(__name__)
 
 ROLE_CARDS_DIR = Path(__file__).parent / "roles"
 
+# Absolute backstop for an employee's inner ConversationLoop when the
+# assignment budget leaves iterations unlimited. High enough that a normal
+# objective never hits it; the wall-clock budget is the real guard.
+_LOOP_HARD_CEILING = 500
+
 
 def employee_root(key: str) -> Path:
     return Path(settings.database_path).parent / "employees" / key
@@ -126,6 +131,8 @@ async def build_employee(
         memory_store=memory_store,
     )
 
+    assignment_budget = budget or Budget()
+
     loop = ConversationLoop(
         inference_manager=inference_manager,
         tool_registry=registry,
@@ -135,7 +142,13 @@ async def build_employee(
         message_store=message_store,
         context_builder=context_builder,
         compressor=compressor,
-        max_iterations=settings.max_iterations,
+        # Follow the assignment budget: 0 means effectively unlimited turns.
+        # The per-employee ConversationLoop is just the last-resort backstop.
+        max_iterations=(
+            assignment_budget.max_iterations
+            if assignment_budget.max_iterations
+            else _LOOP_HARD_CEILING
+        ),
         max_tool_result_chars=settings.max_tool_result_chars,
     )
 
@@ -144,7 +157,7 @@ async def build_employee(
         spec=spec,
         workspace=workspace,
         loop=loop,
-        budget=budget or Budget(),
+        budget=assignment_budget,
     )
     employee._database = database
     return employee

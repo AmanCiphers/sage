@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     max_iterations: int = 8
     max_tool_result_chars: int = 8000
 
+    # Employee assignment budgets (0/None = unlimited). Iterations and
+    # tokens are unlimited by default — tool calls are cheap; wall-clock
+    # is the sole runaway guard.
+    employee_max_iterations: int = 0
+    employee_max_tokens: int = 0
+    employee_max_wall_seconds: float = 600.0
+
     # Context / compaction (forever-running chat).
     context_window_tokens: int = 32000
     compaction_threshold_ratio: float = 0.5

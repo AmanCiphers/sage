@@ -23,6 +23,7 @@ from app.permissions.engine import PermissionEngine
 from app.persistence.database import Database
 from app.persistence.schema import initialize_schema
 from app.persistence.store import TaskStore
+from app.tools.file_tools import register_file_tools
 from app.tools.registry import ToolRegistry
 
 # --- roster (N9 + naming decisions) ---
@@ -99,21 +100,21 @@ def data_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
-def build_supervisor(database, scripted=None, budget=None) -> Supervisor:
+def build_supervisor(database, scripted=None, budget=None, registry=None) -> Supervisor:
     provider = FakeInferenceProvider(
         scripted=scripted,
         capabilities=ModelCapabilities(tool_calling=True, streaming=True),
     )
-    registry = ModelRegistry()
-    registry.register(provider)
-    inference_manager = InferenceManager(registry)
+    model_registry = ModelRegistry()
+    model_registry.register(provider)
+    inference_manager = InferenceManager(model_registry)
 
     return Supervisor(
         task_store=TaskStore(database),
         permission_engine=PermissionEngine(),
-        registry=ToolRegistry(),
+        registry=registry or ToolRegistry(),
         inference_manager=inference_manager,
-        model_registry=registry,
+        model_registry=model_registry,
         default_budget=budget,
     )
 
@@ -209,7 +210,7 @@ async def test_activity_lists_worker_assignments(database):
 
 
 async def test_budget_breach_reports_failed_honestly(database):
-    # Budget allows zero iterations → the first loop turn breaches it.
+    # Wall-clock ceiling of 0s → the first check breaches it, honestly.
     budget = Budget(max_iterations=0, max_tokens=0, max_wall_seconds=0)
     supervisor = build_supervisor(
         database,
@@ -223,6 +224,67 @@ async def test_budget_breach_reports_failed_honestly(database):
     task = await supervisor.get_status(task_id)
     assert task["status"] == "failed"
     assert "budget exceeded" in task["error"]
+
+
+async def test_employee_writes_to_its_own_workspace(database):
+    """File tools must resolve into the employee's workspace, not SAGE's."""
+
+    tools = ToolRegistry()
+    register_file_tools(tools)
+
+    supervisor = build_supervisor(
+        database,
+        registry=tools,
+        scripted=[
+            InferenceResponse(
+                model="fake",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": '{"path": "notes.md", "content": "hi"}',
+                        },
+                    }
+                ],
+            ),
+            InferenceResponse(model="fake", content="wrote notes.md"),
+        ],
+    )
+
+    task_id = await supervisor.assign("asta", "write notes.md")
+    await asyncio.gather(*supervisor._background.values())
+
+    task = await supervisor.get_status(task_id)
+    assert task["status"] == "completed"
+
+    employee = supervisor._employees["asta"]
+    assert (employee.workspace / "notes.md").read_text() == "hi"
+    # And nothing leaked into SAGE's global workspace.
+    assert not (settings.workspace_path / "notes.md").exists()
+
+
+async def test_file_tools_are_employee_eligible():
+    tools = ToolRegistry()
+    register_file_tools(tools)
+    for name in ("read_file", "list_files", "write_file", "patch"):
+        assert tools.get(name).employee_eligible is True
+
+
+def test_default_budget_has_unlimited_iterations_and_tokens():
+    # Tool calls are cheap: iterations and tokens are unlimited by default;
+    # wall-clock is the sole runaway guard.
+    budget = Budget()
+    assert budget.max_iterations == 0
+    assert budget.max_tokens == 0
+    assert budget.max_wall_seconds == 600.0
+
+    tracker = BudgetTracker(budget=budget)
+    for _ in range(50):
+        tracker.start_iteration()
+    tracker.add_tokens(10_000_000)
+    tracker.check_time()
 
 
 async def test_recover_marks_stuck_assignments_unknown(database):

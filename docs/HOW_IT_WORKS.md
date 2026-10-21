@@ -116,10 +116,14 @@ user <-------- SAGE narrates results <--- EventBus (employee_* / task_* events)
   tool call (same `PermissionEngine`), so backgrounding never bypasses
   consent. SAGE stays the approval authority: consent prompts created
   during an assignment route back through SAGE's normal approval flow.
-- **Hard budgets** (N8) bound every assignment: `max_iterations`,
-  `max_tokens`, `max_wall_seconds`, plus cancellation. A breach ends the
-  assignment honestly as `failed` (or `unknown` when the outcome is
-  indeterminate).
+- **Budgets** bound every assignment: `max_iterations`, `max_tokens`,
+  `max_wall_seconds`, plus cancellation. By default **iterations and tokens
+  are unlimited** (tool calls are cheap; an employee may pursue an objective
+  until done) and only **wall-clock** guards against a runaway. Any ceiling
+  set to `0`/`None` means unlimited. A breach ends the assignment honestly as
+  `failed` (or `unknown` when the outcome is indeterminate). Settings:
+  `SAGE_EMPLOYEE_MAX_ITERATIONS`, `SAGE_EMPLOYEE_MAX_TOKENS`,
+  `SAGE_EMPLOYEE_MAX_WALL_SECONDS`.
 - **Honest statuses** (ArchitectureV2 §12): `failed` = definitely failed;
   `unknown` = outcome cannot be determined (budget breach mid-action,
   cancel). On startup, leftover `queued`/`running` assignments from a
@@ -303,7 +307,10 @@ errors, so streaming output and the spinner stay uncluttered.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `MAX_ITERATIONS` | 8 | Loop iteration cap per turn |
+| `MAX_ITERATIONS` | 8 | Loop iteration cap per turn (SAGE's own turn) |
+| `EMPLOYEE_MAX_ITERATIONS` | 0 (unlimited) | Employee assignment iteration cap |
+| `EMPLOYEE_MAX_TOKENS` | 0 (unlimited) | Employee assignment token cap |
+| `EMPLOYEE_MAX_WALL_SECONDS` | 600 | Employee assignment wall-clock cap (the runaway guard) |
 | `CONTEXT_WINDOW_TOKENS` | 32000 | Assumed context window for compaction |
 | `COMPACTION_THRESHOLD_RATIO` | 0.5 | Compact when prompt reaches this fraction |
 | `HISTORY_FETCH_LIMIT` | 400 | Max raw messages fetched per turn |

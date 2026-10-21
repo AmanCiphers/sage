@@ -4,6 +4,7 @@ from app.context.compressor import ContextCompressor
 from app.conversation.loop import ConversationLoop
 from app.conversation.models import AssistantResponse, UserMessage
 from app.conversation.system_prompt import get_system_prompt
+from app.employees.budgets import Budget
 from app.employees.supervisor import Supervisor
 from app.events.bus import EventBus
 from app.events.store import EventStore
@@ -103,6 +104,11 @@ class SAGEApplication:
             inference_manager=self.inference_manager,
             model_registry=self.model_registry,
             event_bus=self.event_bus,
+            default_budget=Budget(
+                max_iterations=settings.employee_max_iterations,
+                max_tokens=settings.employee_max_tokens,
+                max_wall_seconds=settings.employee_max_wall_seconds,
+            ),
             max_result_chars=settings.max_tool_result_chars,
         )
 

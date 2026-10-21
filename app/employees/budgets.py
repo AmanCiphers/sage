@@ -1,10 +1,11 @@
 """Per-assignment budgets for an Employee (plan N8).
 
-An employee is an autonomous LLM loop, so it must be bounded. A `Budget`
-caps the three things that can run away: loop iterations, total tokens,
-and wall-clock time. `BudgetTracker` enforces them incrementally and
-raises `BudgetExceeded` the moment a ceiling is crossed — the supervisor
-turns that into an honest task status.
+An employee is an autonomous LLM loop that can run away, so its work is
+bounded. Historically all three ceilings (iterations, tokens, wall-clock)
+were tight; by default **iterations and tokens are now unlimited** — tool
+calls are cheap and an employee should be free to pursue an objective until
+it is done. The **wall-clock ceiling stays** as the sole runaway guard, and
+any ceiling set to `0`/`None` means "unlimited".
 """
 
 from __future__ import annotations
@@ -26,8 +27,8 @@ class BudgetExceeded(Exception):
 class Budget:
     """Ceilings for one assignment. 0/None means 'unlimited'."""
 
-    max_iterations: int = 12
-    max_tokens: int = 120_000
+    max_iterations: int = 0
+    max_tokens: int = 0
     max_wall_seconds: float = 600.0
 
 

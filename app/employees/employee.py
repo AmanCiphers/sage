@@ -73,6 +73,12 @@ class Employee:
         # Count iterations as they start (the loop emits llm_start per turn).
         self.loop.on_event = _bridge
 
+        # Route file/shell tools to this employee's own workspace for the
+        # duration of the turn (context var — safe under asyncio task copy).
+        from app.tools.workspace import reset_workspace, use_workspace
+
+        workspace_token = use_workspace(self.workspace)
+
         try:
             # Iteration/token ceilings are enforced by wrapping the event
             # stream: each llm_start is one iteration.
@@ -119,6 +125,7 @@ class Employee:
             )
         finally:
             self.loop.on_event = None
+            reset_workspace(workspace_token)
 
     @property
     def id(self) -> str:

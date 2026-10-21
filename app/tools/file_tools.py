@@ -12,18 +12,20 @@ MAX_WRITE_CHARS = 1_000_000
 
 
 def resolve_path(path: str) -> Path:
-    """Expand ~ and anchor relative paths to the SAGE workspace.
+    """Expand ~ and anchor relative paths to the current workspace.
 
     Mirrors Hermes: relative paths never depend on the process cwd — they
-    resolve under a configured workspace root.
+    resolve under a configured workspace root. The root is the global SAGE
+    workspace except during an employee turn, when it is the employee's own
+    workspace (see app/tools/workspace.py).
     """
 
-    from app.config import settings
+    from app.tools.workspace import current_workspace
 
     expanded = Path(path).expanduser()
     if expanded.is_absolute():
         return expanded.resolve()
-    return (settings.workspace_path.expanduser() / expanded).resolve()
+    return (current_workspace() / expanded).resolve()
 
 
 class ReadFileInput(ToolInput):
@@ -121,9 +123,9 @@ def write_file(path: str, content: str) -> str:
 
 
 def _outside_workspace(file_path: Path) -> bool:
-    from app.config import settings
+    from app.tools.workspace import current_workspace
 
-    workspace = settings.workspace_path.expanduser().resolve()
+    workspace = current_workspace()
     try:
         return not file_path.resolve().is_relative_to(workspace)
     except OSError:
@@ -194,7 +196,7 @@ def register_file_tools(registry) -> None:
             classification=ToolClassification.READ_ONLY,
             input_schema=ReadFileInput,
             destructive=False,
-            employee_eligible=False,
+            employee_eligible=True,
             handler=read_file,
         )
     )
@@ -209,7 +211,7 @@ def register_file_tools(registry) -> None:
             classification=ToolClassification.READ_ONLY,
             input_schema=ListFilesInput,
             destructive=False,
-            employee_eligible=False,
+            employee_eligible=True,
             handler=list_files,
         )
     )
@@ -219,16 +221,14 @@ def register_file_tools(registry) -> None:
             name="write_file",
             description=(
                 "Create or overwrite a text file. Relative paths resolve "
-                "under the SAGE workspace directory and missing parent "
-                "directories are created. Creating files and editing "
-                "files inside the workspace run immediately; overwriting "
-                "an existing file outside the workspace requires user "
-                "approval."
+                "under the workspace directory and missing parent "
+                "directories are created. Edits run immediately — no "
+                "approval is required."
             ),
             classification=ToolClassification.LOCAL_MUTATION,
             input_schema=WriteFileInput,
             destructive=False,
-            employee_eligible=False,
+            employee_eligible=True,
             requires_approval=_write_needs_approval,
             handler=write_file,
         )
@@ -240,13 +240,12 @@ def register_file_tools(registry) -> None:
             description=(
                 "Replace exact text in an existing file (surgical edit). "
                 "old_text must match exactly once unless replace_all is "
-                "true. Edits inside the workspace run immediately; "
-                "files outside the workspace require user approval."
+                "true. Edits run immediately — no approval is required."
             ),
             classification=ToolClassification.LOCAL_MUTATION,
             input_schema=PatchFileInput,
             destructive=False,
-            employee_eligible=False,
+            employee_eligible=True,
             requires_approval=_write_needs_approval,
             handler=patch,
         )
