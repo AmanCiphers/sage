@@ -4,10 +4,10 @@ from app.context.compressor import ContextCompressor
 from app.conversation.loop import ConversationLoop
 from app.conversation.models import AssistantResponse, UserMessage
 from app.conversation.system_prompt import get_system_prompt
+from app.employees.supervisor import Supervisor
 from app.events.bus import EventBus
 from app.events.store import EventStore
 from app.execution.engine import ExecutionEngine
-from app.employees.supervisor import Supervisor
 from app.inference.manager import InferenceManager
 from app.inference.models import ModelRequirements
 from app.inference.providers.factory import create_provider
@@ -18,7 +18,7 @@ from app.memory.store import MemoryStore
 from app.operations.manager import OperationManager
 from app.permissions.approvals import ApprovalManager
 from app.permissions.engine import PermissionEngine
-from app.permissions.gate import ApprovalGate, get_gate_spec
+from app.permissions.gate import ApprovalGate
 from app.permissions.smart import get_smart_guardian
 from app.persistence.database import Database
 from app.persistence.schema import initialize_schema
@@ -50,19 +50,6 @@ class SAGEApplication:
             settings.database_path.parent / "memory.md"
         )
 
-        # Event system
-        self.event_store = EventStore(self.database)
-        self.event_bus = EventBus(self.event_store)
-
-        # Scheduler & Proactive (will be initialized after execution_engine)
-        self.scheduler_store = SchedulerStore(self.database)
-        self.scheduler = SchedulerEngine(
-            store=self.scheduler_store,
-            event_bus=self.event_bus,
-        )
-        # Proactive will be initialized after execution_engine is created
-        self.proactive = None
-
         self.tool_registry = ToolRegistry()
 
         self.model_registry = ModelRegistry()
@@ -93,6 +80,10 @@ class SAGEApplication:
 
         self.approval_manager = ApprovalManager(self.database)
 
+        # Event system
+        self.event_store = EventStore(self.database)
+        self.event_bus = EventBus(self.event_store)
+
         self.execution_engine = ExecutionEngine(
             self.tool_registry,
         )
@@ -102,10 +93,6 @@ class SAGEApplication:
             execution_engine=self.execution_engine,
             registry=self.tool_registry,
         )
-
-        # Event system
-        self.event_store = EventStore(self.database)
-        self.event_bus = EventBus(self.event_store)
 
         # Supervisor: SAGE's interface to the employee roster (replaces the
         # old process-worker TaskDispatcher).
@@ -142,11 +129,8 @@ class SAGEApplication:
             tool_registry=self.tool_registry,
         )
 
-        self.approval_manager = ApprovalManager(self.database)
-
         # Wire up tool handlers that need scheduler/proactive
         self._wire_tool_handlers()
-
         # Determine the effective context window from the primary model
         # (highest-priority available model with tool_calling support).
         router = ModelRouter(self.model_registry)
@@ -266,16 +250,10 @@ class SAGEApplication:
         success = await self.proactive.remove_rule(rule_id)
         return json.dumps({"success": success, "rule_id": rule_id})
 
-    async def _cli_approval_callback(self, prompt) -> "ApprovalResponse":
+    async def _cli_approval_callback(self, prompt) -> "ApprovalResponse":  # noqa: F821
         """CLI approval callback - prompts user for approval."""
         from app.permissions.models import ApprovalResponse
-        from app.permissions.gate import get_gate_spec
 
-        spec = get_gate_spec(prompt.tool_name)
-
-        # Build prompt
-        body = f"**{prompt.description}**\n\n**Target:** `{prompt.display_target}`"
-        
         print(f"\n⚠️  {prompt.description}")
         print(f"Target: {prompt.display_target}")
         print()
@@ -287,9 +265,9 @@ class SAGEApplication:
             print("  [a] Yes, permanently (add to allowlist)")
         print("  [n] No, deny")
         print("  [q] Quit")
-        
+
         choice = input("Choice: ").strip().lower()
-        
+
         if choice in ("y", "yes"):
             return ApprovalResponse(choice="allow")
         elif choice in ("s", "session") and prompt.allow_session:
@@ -301,7 +279,7 @@ class SAGEApplication:
         else:
             return ApprovalResponse(choice="deny", reason="User denied")
 
-    async def _gateway_approval_callback(self, prompt) -> "ApprovalResponse":
+    async def _gateway_approval_callback(self, prompt) -> "ApprovalResponse":  # noqa: F821
         """Gateway approval callback - for future Web UI integration."""
         from app.permissions.models import ApprovalResponse
         # Placeholder for gateway (Web UI) approval
@@ -397,9 +375,9 @@ class SAGEApplication:
         if recovered:
             self.logger.warning("stale_operations_recovered count=%s", recovered)
 
-        stale_tasks = await self.dispatcher.recover()
+        stale_tasks = await self.supervisor.recover()
         if stale_tasks:
-            self.logger.warning("stale_tasks_recovered count=%s", stale_tasks)
+            self.logger.warning("stale_assignments_recovered count=%s", stale_tasks)
 
         # Start scheduler
         await self.scheduler.start()
@@ -422,6 +400,9 @@ class SAGEApplication:
 
         # Stop scheduler
         await self.scheduler.stop()
+
+        # Wait for outstanding employee assignments, then close their stores.
+        await self.supervisor.shutdown()
 
         await self.database.close()
 

@@ -7,7 +7,7 @@ content? did the command exit 0?) and records `passed` / `failed` /
 
 No LLM verifier in v1 — deterministic checks cover every tool we run
 in the background or behind an approval today (D23).
-"""
+"""  # noqa: RUF002
 
 import json
 import logging
@@ -127,7 +127,7 @@ def verify(tool_name: str, arguments: dict[str, Any], output: Any) -> Verificati
 
     try:
         checks = verifier(arguments, _parse(output))
-    except Exception as exc:  # noqa: BLE001 — verification must not crash tasks
+    except Exception as exc:
         logger.warning("verifier_error tool=%s error=%s", tool_name, exc)
         return Verification(
             status="unverified",

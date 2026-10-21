@@ -67,7 +67,7 @@ class ContextBuilder:
             lines.append(line)
 
         filtered = "\n".join(lines) if lines else "(no additional facts)"
-        return f"{self.system_prompt}\n\nKnown facts about the user (use when relevant):\n{filtered}"
+        return f"{self.system_prompt}\n\nKnown facts about the user (use when relevant):\n{filtered}"  # noqa: E501
 
     @staticmethod
     def _to_api_message(row: dict) -> dict:

@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     task_id       TEXT PRIMARY KEY,
     objective     TEXT NOT NULL,
     tool_name     TEXT NOT NULL,
+    worker        TEXT,
     arguments_json TEXT NOT NULL,
     status        TEXT NOT NULL DEFAULT 'queued',
     result        TEXT,
@@ -82,10 +83,11 @@ async def _ensure_columns(database) -> None:
 
     wanted = {
         "tasks": {
-            "verification": "TEXT", 
+            "verification": "TEXT",
             "verification_detail": "TEXT",
             "started_at": "TEXT",
-            "completed_at": "TEXT"
+            "completed_at": "TEXT",
+            "worker": "TEXT"
         }
     }
 

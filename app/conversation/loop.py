@@ -14,8 +14,8 @@ Structure adapted from Hermes' conversation_loop:
 SAGE deviations from Hermes (see docs/DECISIONS.md):
 - every tool call passes SAGE's deterministic PermissionEngine before
   execution; the LLM can never bypass it
-- the loop never blocks on substantial work: start_task dispatches it to
-  the background and the conversation stays free
+- the loop never blocks on substantial work: assign_task hands the goal to
+  an employee in the background and the conversation stays free
 """
 
 import inspect

@@ -5,7 +5,6 @@ Determines the current execution context to apply appropriate approval modes.
 
 import os
 from dataclasses import dataclass
-from typing import Optional
 
 from app.permissions.config import get_permission_config
 
@@ -22,7 +21,7 @@ class ApprovalContext:
 def get_current_context() -> ApprovalContext:
     """Detect the current execution context and its approval mode."""
     config = get_permission_config()
-    
+
     # Check for global off mode first
     if config.is_off_mode:
         return ApprovalContext(
@@ -31,7 +30,7 @@ def get_current_context() -> ApprovalContext:
             has_human=False,
             description="approvals.mode=off — all actions auto-approved"
         )
-    
+
     # Check for global YOLO
     if config.yolo_active:
         return ApprovalContext(
@@ -40,9 +39,9 @@ def get_current_context() -> ApprovalContext:
             has_human=False,
             description="YOLO mode active — all actions auto-approved"
         )
-    
+
     # Detect specific contexts (order matters - most specific first)
-    
+
     # Single query mode (-q flag)
     if os.getenv("SAGE_SINGLE_QUERY", "").lower() in ("1", "true", "yes"):
         mode = config.get_context_mode("single_query")
@@ -52,7 +51,7 @@ def get_current_context() -> ApprovalContext:
             has_human=False,
             description=f"Single-query mode (SAGE_SINGLE_QUERY) — mode: {mode}"
         )
-    
+
     # Cron job context
     if os.getenv("SAGE_CRON", "").lower() in ("1", "true", "yes"):
         mode = config.get_context_mode("cron")
@@ -62,7 +61,7 @@ def get_current_context() -> ApprovalContext:
             has_human=False,
             description=f"Cron job (SAGE_CRON) — mode: {mode}"
         )
-    
+
     # Gateway context (Web UI, Discord, etc.)
     if os.getenv("SAGE_GATEWAY", "").lower() in ("1", "true", "yes"):
         return ApprovalContext(
@@ -71,7 +70,7 @@ def get_current_context() -> ApprovalContext:
             has_human=True,  # Gateway can notify user
             description=f"Gateway context (SAGE_GATEWAY) — mode: {config.mode}"
         )
-    
+
     # Unattended platform (systemd, docker, etc.)
     if os.getenv("SAGE_UNATTENDED", "").lower() in ("1", "true", "yes"):
         mode = config.get_context_mode("unattended")
@@ -81,7 +80,7 @@ def get_current_context() -> ApprovalContext:
             has_human=False,
             description=f"Unattended platform (SAGE_UNATTENDED) — mode: {mode}"
         )
-    
+
     # Default: interactive CLI
     return ApprovalContext(
         name="cli",

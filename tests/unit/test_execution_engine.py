@@ -44,8 +44,8 @@ async def test_invalid_tool_arguments_are_rejected() -> None:
 
     assert result.success is False
     assert result.error is not None
-    
-    
+
+
 @pytest.mark.asyncio
 async def test_execute_current_date() -> None:
     engine = create_execution_engine()

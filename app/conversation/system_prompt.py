@@ -1,9 +1,9 @@
 """System prompt composition for the SAGE agentic conversation loop."""
 
 from pathlib import Path
+
 from app.config import settings
 from app.memory.store import MemoryStore
-
 
 PROMPT_DIR = Path(__file__).parent
 

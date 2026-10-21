@@ -4,16 +4,16 @@ Shared approval flow for CLI and gateway (Web UI).
 """
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Callable, Awaitable
 
 from app.permissions.config import get_permission_config
-from app.permissions.context import get_current_context, ApprovalContext
+from app.permissions.context import ApprovalContext, get_current_context
 from app.permissions.models import (
-    PermissionDecision,
-    PermissionResult,
     ApprovalPrompt,
     ApprovalResponse,
+    PermissionDecision,
+    PermissionResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,7 +60,7 @@ class GateSpec:
 
 GATE_SPECS = {
     "command": GateSpec(noun="command", allow_permanent=True, allow_session=True),
-    "code": GateSpec(noun="code", allow_permanent=True, allow_session=True, smart_denied_override=True),
+    "code": GateSpec(noun="code", allow_permanent=True, allow_session=True, smart_denied_override=True),  # noqa: E501
     "file_write": GateSpec(noun="file write", allow_permanent=True, allow_session=True),
     "file_patch": GateSpec(noun="file patch", allow_permanent=True, allow_session=True),
     "action": GateSpec(noun="action", allow_permanent=False, allow_session=True),
@@ -78,7 +78,7 @@ STOP_MESSAGE = (
 
 class ApprovalGate:
     """Human approval gate - shared by CLI and gateway."""
-    
+
     def __init__(
         self,
         gateway_callback: Callable[[ApprovalPrompt], "Awaitable[ApprovalResponse]"] | None = None,
@@ -87,7 +87,7 @@ class ApprovalGate:
         self.config = get_permission_config()
         self.gateway_callback = gateway_callback
         self.cli_callback = cli_callback
-    
+
     async def run_gate(
         self,
         pattern_key: str,
@@ -99,7 +99,7 @@ class ApprovalGate:
         smart_denied: bool = False,
     ) -> PermissionResult:
         """Run the approval gate for a flagged action."""
-        
+
         # Build prompt data
         prompt = ApprovalPrompt(
             pattern_key=pattern_key,
@@ -111,24 +111,24 @@ class ApprovalGate:
             allow_session=spec.allow_session if spec else True,
             smart_denied=smart_denied,
         )
-        
+
         # If smart denied, override permanent to session-only
         if smart_denied and spec and spec.smart_denied_override:
             prompt.allow_permanent = False
-        
+
         context = get_current_context()
-        
+
         # Try gateway first (Web UI)
         if self.gateway_callback and context.has_human:
             return await self._run_gateway(prompt, spec, context)
-        
+
         # Try CLI
         if self.cli_callback and context.has_human:
             return await self._run_cli(prompt, spec)
-        
+
         # No human available - use context config
         return await self._run_unattended(prompt, spec, context)
-    
+
     async def _run_gateway(
         self,
         prompt: "ApprovalPrompt",
@@ -139,13 +139,13 @@ class ApprovalGate:
         try:
             if not self.gateway_callback:
                 return self._pending_result(prompt, spec)
-            
+
             response = await self.gateway_callback(prompt)
             return self._process_response(response, prompt, spec)
         except Exception as e:
             logger.error(f"Gateway callback failed: {e}")
             return self._pending_result(prompt, spec)
-    
+
     async def _run_cli(
         self,
         prompt: "ApprovalPrompt",
@@ -155,13 +155,13 @@ class ApprovalGate:
         try:
             if not self.cli_callback:
                 return self._pending_result(prompt, spec)
-            
+
             response = await self.cli_callback(prompt)
             return self._process_response(response, prompt, spec)
         except Exception as e:
             logger.error(f"CLI callback failed: {e}")
             return self._pending_result(prompt, spec)
-    
+
     async def _run_unattended(
         self,
         prompt: "ApprovalPrompt",
@@ -169,8 +169,6 @@ class ApprovalGate:
         context: ApprovalContext,
     ) -> PermissionResult:
         """Handle unattended contexts (cron, single-query, etc.)."""
-        config = get_permission_config()
-        
         if context.mode == "approve":
             # Context configured to auto-approve
             return PermissionResult(
@@ -178,7 +176,7 @@ class ApprovalGate:
                 pattern_key=prompt.pattern_key,
                 smart_verdict="auto_approve" if prompt.smart_denied else None,
             )
-        
+
         # Deny or fallback to pending
         if context.mode == "deny":
             return PermissionResult(
@@ -187,10 +185,10 @@ class ApprovalGate:
                 description=prompt.description,
                 message=f"Blocked by {context.name} context (mode: deny): {prompt.description}",
             )
-        
+
         # Fallback: create pending approval (for manual /approve later)
         return self._pending_result(prompt, spec)
-    
+
     def _process_response(
         self,
         response: "ApprovalResponse",
@@ -198,28 +196,28 @@ class ApprovalGate:
         spec: "GateSpec | None",
     ) -> PermissionResult:
         """Process user/gateway response into PermissionResult."""
-        
+
         if response.choice == "allow":
             return PermissionResult(
                 decision=PermissionDecision.ALLOWED,
                 pattern_key=prompt.pattern_key,
                 smart_verdict="user_approved",
             )
-        
+
         if response.choice == "session":
             return PermissionResult(
                 decision=PermissionDecision.ALLOWED,
                 pattern_key=prompt.pattern_key,
                 message="Approved for this session",
             )
-        
+
         if response.choice == "permanent" and prompt.allow_permanent:
             return PermissionResult(
                 decision=PermissionDecision.ALLOWED,
                 pattern_key=prompt.pattern_key,
                 message="Approved permanently (added to allowlist)",
             )
-        
+
         # Deny or timeout
         reason = response.reason or "denied by user"
         if response.choice == "timeout":
@@ -229,7 +227,7 @@ class ApprovalGate:
                 description=prompt.description,
                 message=f"Approval timed out. {STOP_MESSAGE}",
             )
-        
+
         if response.choice == "cancelled":
             return PermissionResult(
                 decision=PermissionDecision.DENIED,
@@ -237,7 +235,7 @@ class ApprovalGate:
                 description=prompt.description,
                 message=f"Approval cancelled: {reason}. {STOP_MESSAGE}",
             )
-        
+
         # Deny
         return PermissionResult(
             decision=PermissionDecision.DENIED,
@@ -245,11 +243,11 @@ class ApprovalGate:
             description=prompt.description,
             message=f"BLOCKED: User denied {prompt.noun} ({reason}).{STOP_MESSAGE}",
         )
-    
-    def _pending_result(self, prompt: "ApprovalPrompt", spec: "GateSpec | None") -> PermissionResult:
+
+    def _pending_result(self, prompt: "ApprovalPrompt", spec: "GateSpec | None") -> PermissionResult:  # noqa: E501
         """Create a pending approval result."""
         body = f"**{prompt.description}**\n\n**Target:** `{prompt.display_target}`"
-        
+
         return PermissionResult(
             decision=PermissionDecision.APPROVAL_REQUIRED,
             pattern_key=prompt.pattern_key,
@@ -261,12 +259,12 @@ class ApprovalGate:
                 f"each variant sends another approval request. Wait for decision."
             ),
         )
-    
+
     def _get_display_target(self, arguments: dict) -> str:
         """Extract display target from arguments."""
         if not arguments:
             return ""
-        
+
         for key in ["command", "path", "file", "target", "resource"]:
             if key in arguments:
                 val = arguments[key]
@@ -299,7 +297,7 @@ class GateSpec:
 
 GATE_SPECS = {
     "command": GateSpec(noun="command", allow_permanent=True, allow_session=True),
-    "code": GateSpec(noun="code", allow_permanent=True, allow_session=True, smart_denied_override=True),
+    "code": GateSpec(noun="code", allow_permanent=True, allow_session=True, smart_denied_override=True),  # noqa: E501
     "file_write": GateSpec(noun="file write", allow_permanent=True, allow_session=True),
     "file_patch": GateSpec(noun="file patch", allow_permanent=True, allow_session=True),
     "action": GateSpec(noun="action", allow_permanent=False, allow_session=True),

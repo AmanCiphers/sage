@@ -24,7 +24,8 @@ from app.context.compressor import ContextCompressor
 from app.conversation.loop import ConversationLoop
 from app.employees.budgets import Budget
 from app.employees.employee import Employee
-from app.employees.roster import EmployeeSpec, ROSTER, get as get_spec
+from app.employees.roster import EmployeeSpec
+from app.employees.roster import get as get_spec
 from app.execution.engine import ExecutionEngine
 from app.inference.manager import InferenceManager
 from app.inference.models import ModelRequirements
@@ -145,7 +146,7 @@ async def build_employee(
         loop=loop,
         budget=budget or Budget(),
     )
-    setattr(employee, "_database", database)
+    employee._database = database
     return employee
 
 

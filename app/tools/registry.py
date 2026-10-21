@@ -22,7 +22,7 @@ class ToolRegistry:
             pass
 
         # Recovery for provider junk: reasoning models sometimes leak
-        # chat-template text after the real name (`start_task` +
+        # chat-template text after the real name (`assign_task` +
         # `commentary`), which sanitization may leave glued on. If
         # exactly ONE registered tool is a prefix of the requested name,
         # that is unambiguously the intended tool — it still goes through

@@ -130,7 +130,7 @@ async def test_loop_emits_approval_event_not_tool_end(database):
         classification=ToolClassification.LOCAL_MUTATION,
         input_schema=None,
         destructive=True,
-        worker_eligible=False,
+        employee_eligible=False,
         handler=lambda: ran.append("x"),
     )
 

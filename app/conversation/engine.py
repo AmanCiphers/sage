@@ -11,7 +11,7 @@ from .models import AssistantResponse, UserMessage
 
 
 class ConversationEngine:
-    
+
     def __init__(
         self,
         decision_engine: DecisionEngine,

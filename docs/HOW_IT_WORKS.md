@@ -69,56 +69,63 @@ to the loop complete. Provider fallback applies only before the first
 delta — after the user has seen text, a failure raises rather than
 re-emitting. Providers without SSE fall back to a single-delta stream.
 
-## Staying free: background tasks
+## Staying free: background assignments
 
 SAGE must never block the conversation. Two execution paths:
 
 - **Inline** — small atomic tools (`get_current_time`, `task_status`, …)
   run inside the turn.
-- **Background** — `start_task` creates a durable row in the `tasks` table
-  and starts an asyncio task, returning a `task_id` **immediately**. The
-  conversation is free at once. `task_status` reads durable state, so
-  "how's task A going?" is just a normal turn.
+- **Background** — `assign_task(worker, objective)` creates a durable row
+  in the `tasks` table and starts the named **employee** as a lazy asyncio
+  task, returning a `task_id` **immediately**. The conversation is free at
+  once. `task_status` reads durable state, so "how's Asta going?" is just
+  a normal turn.
 
-`app/execution/dispatcher.py` owns this. Before a task is even created,
-the target tool must be **worker-eligible** and its dynamic
-`requires_approval` hook must pass — a command that needs consent cannot
-be laundered through `start_task`; it must go through the inline approval
-flow first (D23/D24). Background runners re-run the
-permission checks as defense in depth.
+### Frozen contract (don't break SAGE)
 
-### Workers: separate processes over UDS
-
-Background tasks run in a **separate OS process** (one per task), never
-on SAGE's event loop:
+SAGE's loop, tools, memory, scheduler, and UI touch only these entry
+points. If they hold, the employee internals can change freely:
 
 ```text
-dispatcher.start()  →  durable tasks row (queued)
-  └─ spawns `python -m app.execution.worker`
-       ↔ per-task Unix Domain Socket (versioned JSON messages:
-          TASK  SAGE → worker        RESULT / ERROR  worker → SAGE)
-worker executes with its OWN tool registry → raw outcome back
-  └─ SAGE-side: permission checks (already done) + deterministic
-     verification → completed / failed / unknown
+assign_task(worker: str, objective: str) -> task_id
+task_status(task_id: str) -> dict      # keys superset of the old shape
+recover() -> int                       # startup reconciliation
 ```
 
-- The **wire protocol** (`app/execution/protocol.py`) is versioned and
-  validated: every message carries `protocol_version`, `message_type`,
-  `task_id`, `worker_id`, `sequence_number`, … with a 1 MB cap; anything
-  malformed is a `ProtocolError`.
-- **Honest statuses** (ArchitectureV2 §12): never connected → `failed`
-  (the tool provably never ran, since `TASK` is only sent after the
-  worker connects); `TASK` sent but no usable answer (crash, deadline,
-  broken frame) → **`unknown`** — SAGE admits it cannot determine the
-  outcome instead of guessing. On startup, leftover `queued`/`running`
-  tasks from a previous SAGE run are marked `unknown` too.
-- **Nothing outside the dispatcher knows about workers**: the dispatcher
-  talks to a `TaskExecutor` seam — `ProcessExecutor` in production,
-  `InlineExecutor` (in-process) for unit tests. The loop, tools,
-  approvals and verification code are identical either way.
-- The worker gets only the task contract (tool, arguments, working
-  directory, deadline) — never SAGE's memory, permissions, or API keys
-  it didn't already have in env.
+`task_status` always returns at least:
+`{task_id, objective, status, verification, verification_detail, result,
+error}` — new fields (e.g. `worker`) are additive only.
+
+### Employees: agent-workers, not subprocesses
+
+`app/employees/supervisor.py` owns this. The old process-worker
+(one-shot OS subprocess over a Unix socket, one tool per task, no mind)
+was **removed** — each background unit of work is now an *employee*: a
+named agent (roster: Asta, Otto, Tony, Alpha, Charlie) with its own
+`ConversationLoop`, its own filtered tool registry, its own memory and
+workspace (`data/employees/<key>/`), and a slim role card.
+
+```text
+SAGE --assign(worker, objective)--> Supervisor
+                                       └─ durable tasks row (queued, worker=k)
+                                          └─ lazy asyncio task: employee.work()
+user <-------- SAGE narrates results <--- EventBus (employee_* / task_* events)
+```
+
+- **Permission checks** happen inside the employee's own loop on every
+  tool call (same `PermissionEngine`), so backgrounding never bypasses
+  consent. SAGE stays the approval authority: consent prompts created
+  during an assignment route back through SAGE's normal approval flow.
+- **Hard budgets** (N8) bound every assignment: `max_iterations`,
+  `max_tokens`, `max_wall_seconds`, plus cancellation. A breach ends the
+  assignment honestly as `failed` (or `unknown` when the outcome is
+  indeterminate).
+- **Honest statuses** (ArchitectureV2 §12): `failed` = definitely failed;
+  `unknown` = outcome cannot be determined (budget breach mid-action,
+  cancel). On startup, leftover `queued`/`running` assignments from a
+  previous SAGE run are marked `unknown` — their employee is gone.
+- **Employees never talk to the user**: they report to SAGE, which
+  narrates. SAGE is the single point of contact.
 
 ### Verification: results are re-checked, not trusted
 
@@ -195,15 +202,15 @@ So after a restart, the conversation can resume from the database.
 - Builtin tools:
   - `get_current_time`, `get_current_date` — quick facts
   - `read_file`, `list_files` — read-only local file access
-  - `write_file` — create/edit files (inside workspace: immediate;
-    existing file outside workspace: approval)
-  - `patch` — surgical exact-text replacement, same approval policy
+  - `write_file` — create/edit files (always immediate; edits never
+    require approval — A5)
+  - `patch` — surgical exact-text replacement, same policy as `write_file`
   - `run_command` — shell in the workspace cwd, timeout + output caps;
     read-only commands run inline, everything else needs approval
   - `memory` — manage long-term memory (add/remove/list/clear)
   - `session_search` — full-text search over the entire conversation history
-  - `start_task`, `task_status` — background execution (any
-    worker-eligible tool, e.g. long `run_command`s)
+  - `assign_task`, `task_status` — background execution: hand an
+    objective to a named employee (see "Staying free")
 - Handlers may be sync or async; the `ExecutionEngine` awaits async handlers.
 
 ## Long-term memory
@@ -242,15 +249,17 @@ Some tools also have a **dynamic** hook (`ToolDefinition.requires_approval`):
 given the actual arguments, SAGE decides if *this particular invocation*
 needs consent. Deterministic, never the LLM's call:
 
-- `write_file`/`patch` — existing file **outside** the workspace → approval;
-  inside the workspace (or a new file) → immediate (workspace trust, D22).
+- `write_file`/`patch` — never needs approval (A5): edits are a
+  first-class local mutation; the engine only backstops the hard-block
+  list (D28).
 - `run_command` — must pass the command classifier
   (`app/permissions/command_policy.py`): first token on the read-only
   allowlist AND no shell metacharacters (`; | & < > \` $()`). `ls; rm -rf /`
   is blocked by the metacharacter rule alone. Everything else → approval.
-- `start_task` — the target tool must be **worker-eligible**, and its
-  dynamic hook also runs before any background work starts (again in
-  `_run`): backgrounding a task never bypasses consent (D23/D24).
+- `assign_task` — validation is structural: the worker must exist on the
+  roster, and the assignment runs under hard budgets (iterations, tokens,
+  wall-clock). Every tool call the employee makes is permission-checked
+  inside its own loop — backgrounding never bypasses consent (D23/D24).
 
 ## Approvals and operations
 
@@ -327,9 +336,16 @@ app/
 │   ├── builder.py          # history assembly (system + summary + tail)
 │   ├── compressor.py       # compaction algorithm
 │   └── tokens.py           # cheap token estimation
+├── employees/
+│   ├── supervisor.py       # assign / get_status / recover (frozen contract)
+│   ├── employee.py         # one employee's agent loop under budgets
+│   ├── roster.py           # fixed roster of five + name normalization
+│   ├── factory.py          # per-employee DB, memory, workspace, tools
+│   ├── budgets.py          # iterations / tokens / wall-clock ceilings
+│   └── roles/              # slim role cards (asta.md, …)
 ├── execution/
 │   ├── engine.py           # inline tool execution
-│   ├── dispatcher.py       # background tasks (start_task / task_status)
+│   ├── verification.py     # SAGE-side outcome re-checks
 │   └── models.py
 ├── inference/              # providers, router, fallback, manager
 ├── memory/

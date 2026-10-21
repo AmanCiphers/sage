@@ -67,7 +67,9 @@ class BudgetTracker:
 
     def check_time(self) -> None:
         elapsed = time.monotonic() - self.started_at
-        if self.budget.max_wall_seconds and elapsed > self.budget.max_wall_seconds:
+        if self.budget.max_wall_seconds is not None and (
+            elapsed > self.budget.max_wall_seconds
+        ):
             raise BudgetExceeded(
                 "wall_clock",
                 f"{elapsed:.1f}s > {self.budget.max_wall_seconds:.0f}s",

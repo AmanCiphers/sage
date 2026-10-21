@@ -16,7 +16,7 @@ def make_tool(
         description="Test tool",
         classification=classification,
         destructive=destructive,
-        worker_eligible=False,
+        employee_eligible=False,
         handler=dummy_handler,
     )
 

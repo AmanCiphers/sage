@@ -80,7 +80,7 @@ class Spinner:
         self._active = False
         if self._task is not None:
             self._task.cancel()
-            try:
+            try:  # noqa: SIM105
                 await self._task
             except asyncio.CancelledError:
                 pass

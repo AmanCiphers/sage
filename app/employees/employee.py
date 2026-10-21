@@ -51,7 +51,7 @@ class Employee:
 
     spec: EmployeeSpec
     workspace: Path
-    loop: "ConversationLoop" = field(repr=False)
+    loop: ConversationLoop = field(repr=False)
     budget: Budget = field(default_factory=Budget)
 
     async def work(
@@ -67,7 +67,7 @@ class Employee:
             if on_progress is not None:
                 try:
                     await on_progress(event)
-                except Exception:  # noqa: BLE001 — progress is best-effort
+                except Exception:
                     logger.debug("employee progress callback failed", exc_info=True)
 
         # Count iterations as they start (the loop emits llm_start per turn).
@@ -107,7 +107,7 @@ class Employee:
                 tokens=tracker.tokens,
                 elapsed_seconds=tracker.elapsed,
             )
-        except Exception as exc:  # noqa: BLE001 — report honestly
+        except Exception as exc:
             logger.exception("employee_failed employee=%s", self.spec.key)
             return EmployeeResult(
                 success=False,

@@ -2,22 +2,21 @@
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Optional
 
 
-class PermissionDecision(str, Enum):
+class PermissionDecision(str, Enum):  # noqa: UP042
     ALLOWED = "allowed"
     APPROVAL_REQUIRED = "approval_required"
     DENIED = "denied"
 
 
-class SmartVerdict(str, Enum):
+class SmartVerdict(str, Enum):  # noqa: UP042
     APPROVE = "approve"
     DENY = "deny"
     ESCALATE = "escalate"
 
 
-class ToolClassification(str, Enum):
+class ToolClassification(str, Enum):  # noqa: UP042
     READ_ONLY = "read_only"
     LOCAL_MUTATION = "local_mutation"
     EXTERNAL_SIDE_EFFECT = "external_side_effect"
@@ -29,19 +28,19 @@ class PermissionRequest:
     tool_name: str
     classification: ToolClassification
     destructive: bool = False
-    arguments: Optional[dict] = None
-    pattern_key: Optional[str] = None
+    arguments: dict | None = None
+    pattern_key: str | None = None
 
 
 @dataclass
 class PermissionResult:
     """Result of a permission check."""
     decision: PermissionDecision
-    pattern_key: Optional[str] = None
-    description: Optional[str] = None
-    message: Optional[str] = None
+    pattern_key: str | None = None
+    description: str | None = None
+    message: str | None = None
     requires_smart_check: bool = False
-    smart_verdict: Optional[str] = None
+    smart_verdict: str | None = None
 
 
 @dataclass
@@ -69,4 +68,4 @@ class ApprovalPrompt:
 class ApprovalResponse:
     """User's response to an approval prompt."""
     choice: str  # "allow" | "deny" | "session" | "permanent" | "timeout" | "cancelled"
-    reason: Optional[str] = None
+    reason: str | None = None

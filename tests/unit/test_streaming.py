@@ -235,7 +235,7 @@ async def test_stream_sanitizes_leaked_chat_tokens_in_tool_calls():
         yield (
             'data: {"choices":[{"delta":{"tool_calls":[{"index":0,'
             '"id":"c1","type":"function","function":'
-            '{"name":"start_task","arguments":""}}]}}]}\n\n'
+            '{"name":"assign_task","arguments":""}}]}}]}\n\n'
         )
         yield (
             'data: {"choices":[{"delta":{"tool_calls":[{"index":0,'
@@ -267,5 +267,5 @@ async def test_stream_sanitizes_leaked_chat_tokens_in_tool_calls():
     await client.aclose()
 
     assert len(tool_calls) == 1
-    assert tool_calls[0]["function"]["name"] == "start_task"
+    assert tool_calls[0]["function"]["name"] == "assign_task"
     assert tool_calls[0]["function"]["arguments"] == "{}"

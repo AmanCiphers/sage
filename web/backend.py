@@ -130,6 +130,15 @@ class ConnectionManager:
             return f"{et.replace('_', ' ')} · {p.get('name', p.get('rule_id', ''))}".rstrip(" ·")
         if et == "worker_log":
             return str(p.get("message", p.get("log", "")))[:160]
+        if et == "employee_assigned":
+            return f"assigned to {p.get('name', p.get('worker', '?'))} · {p.get('objective', '')}".rstrip(" ·")
+        if et == "employee_activity":
+            stage = p.get("stage", "")
+            if stage == "tool_start" and p.get("tool"):
+                return f"{p.get('name', '?')} · tool {p['tool']}"
+            return f"{p.get('name', '?')} · {stage.replace('_', ' ')}".rstrip(" ·")
+        if et == "employee_finished":
+            return f"{p.get('name', p.get('worker', '?'))} finished"
         return et.replace("_", " ")
 
     async def stop(self):
@@ -188,6 +197,10 @@ class ChatRequest(BaseModel):
 
 class ApprovalRequest(BaseModel):
     approved: bool
+
+
+class AssignRequest(BaseModel):
+    objective: str
 
 
 @app.get("/api/health")
@@ -360,12 +373,49 @@ async def list_tasks(limit: int = 50):
     if not sage_app:
         return {"tasks": []}
     try:
-        store = sage_app.dispatcher.task_store
+        store = sage_app.task_store
         tasks = await store.list_recent(limit=limit)
         return {"tasks": tasks}
     except Exception as e:
         logger.exception("list_tasks_failed", error=str(e))
         return {"tasks": []}
+
+
+@app.get("/api/workers")
+async def list_workers():
+    """Roster snapshot: the five employees with standby/active status."""
+    if not sage_app:
+        return {"workers": []}
+    return {"workers": sage_app.supervisor.roster_status()}
+
+
+@app.post("/api/workers/{name}/assign")
+async def assign_worker(name: str, request: AssignRequest):
+    """Assign an objective to a named employee (API-first, N10)."""
+    if not sage_app:
+        return {"error": "SAGE not initialized", "status": "failed"}
+    try:
+        task_id = await sage_app.supervisor.assign(
+            worker=name, objective=request.objective
+        )
+        return {"task_id": task_id, "worker": name, "status": "queued"}
+    except KeyError as e:
+        return {"error": str(e), "status": "failed"}
+    except Exception as e:
+        logger.exception("assign_failed", worker=name, error=str(e))
+        return {"error": str(e), "status": "failed"}
+
+
+@app.get("/api/workers/{name}/activity")
+async def worker_activity(name: str, limit: int = 20):
+    """Recent assignments for one employee."""
+    if not sage_app:
+        return {"activity": []}
+    try:
+        activity = await sage_app.supervisor.activity(name, limit=limit)
+        return {"activity": activity}
+    except KeyError as e:
+        return {"error": str(e), "activity": []}
 
 
 @app.get("/api/scheduler/jobs")

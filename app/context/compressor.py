@@ -181,7 +181,7 @@ New conversation segment:
 
 Merge the previous summary with the new segment into one updated summary.
 Cover: current goal, active state, key decisions, errors/fixes, relevant files or resources.
-Keep it under {SUMMARY_TARGET_CHARS} characters. Output only the summary text."""
+Keep it under {SUMMARY_TARGET_CHARS} characters. Output only the summary text."""  # noqa: E501
 
         try:
             response = await self.inference_manager.generate(

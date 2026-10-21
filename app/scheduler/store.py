@@ -1,18 +1,17 @@
 """Scheduler persistence layer."""
 
 import json
-from typing import Any
 
 from app.persistence.database import Database
-from app.scheduler.models import ScheduledJob, ProactiveRule
+from app.scheduler.models import ProactiveRule, ScheduledJob
 
 
 class SchedulerStore:
     """Persisted scheduled jobs and proactive rules."""
-    
+
     def __init__(self, database: Database):
         self.database = database
-    
+
     async def initialize(self) -> None:
         """Create scheduler tables."""
         await self.database.execute("""
@@ -34,8 +33,8 @@ class SchedulerStore:
         await self.database.execute("""
             CREATE INDEX IF NOT EXISTS idx_jobs_next_run 
             ON scheduled_jobs(next_run_at) WHERE enabled = 1
-        """)
-        
+        """)  # noqa: W291
+
         await self.database.execute("""
             CREATE TABLE IF NOT EXISTS proactive_rules (
                 rule_id                 TEXT PRIMARY KEY,
@@ -55,12 +54,12 @@ class SchedulerStore:
         await self.database.execute("""
             CREATE INDEX IF NOT EXISTS idx_rules_trigger 
             ON proactive_rules(trigger_event_type) WHERE enabled = 1
-        """)
+        """)  # noqa: W291
         await self.database.commit()
-        
+
         # Additive column upgrades for existing databases
         await self._ensure_columns()
-    
+
     async def _ensure_columns(self) -> None:
         """Additive column upgrades for scheduler tables."""
         # proactive_rules: created_at
@@ -71,16 +70,16 @@ class SchedulerStore:
                 "ALTER TABLE proactive_rules ADD COLUMN created_at TEXT DEFAULT (datetime('now'))"
             )
             await self.database.commit()
-    
+
     # --- Scheduled Jobs ---
-    
+
     async def create_job(self, job: ScheduledJob) -> str:
         await self.database.execute(
             """
             INSERT INTO scheduled_jobs 
             (job_id, name, cron_expression, event_type, payload_template, enabled, created_at, next_run_at, max_runs, timezone)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+            """,  # noqa: E501, W291
             (
                 job.job_id,
                 job.name,
@@ -96,7 +95,7 @@ class SchedulerStore:
         )
         await self.database.commit()
         return job.job_id
-    
+
     async def get_job(self, job_id: str) -> ScheduledJob | None:
         cursor = await self.database.execute(
             "SELECT * FROM scheduled_jobs WHERE job_id = ?", (job_id,)
@@ -105,7 +104,7 @@ class SchedulerStore:
         if not row:
             return None
         return self._row_to_job(row)
-    
+
     async def list_jobs(self, enabled_only: bool = False) -> list[ScheduledJob]:
         query = "SELECT * FROM scheduled_jobs"
         if enabled_only:
@@ -114,7 +113,7 @@ class SchedulerStore:
         cursor = await self.database.execute(query)
         rows = await cursor.fetchall()
         return [self._row_to_job(row) for row in rows]
-    
+
     async def update_job(self, job: ScheduledJob) -> None:
         await self.database.execute(
             """
@@ -136,14 +135,14 @@ class SchedulerStore:
             ),
         )
         await self.database.commit()
-    
+
     async def delete_job(self, job_id: str) -> bool:
         cursor = await self.database.execute(
             "DELETE FROM scheduled_jobs WHERE job_id = ?", (job_id,)
         )
         await self.database.commit()
         return cursor.rowcount > 0
-    
+
     async def get_due_jobs(self, now: str) -> list[ScheduledJob]:
         """Get all enabled jobs whose next_run_at <= now."""
         cursor = await self.database.execute(
@@ -156,7 +155,7 @@ class SchedulerStore:
         )
         rows = await cursor.fetchall()
         return [self._row_to_job(row) for row in rows]
-    
+
     def _row_to_job(self, row: tuple) -> ScheduledJob:
         return ScheduledJob(
             job_id=row[0],
@@ -172,9 +171,9 @@ class SchedulerStore:
             max_runs=row[10],
             timezone=row[11],
         )
-    
+
     # --- Proactive Rules ---
-    
+
     async def create_rule(self, rule: ProactiveRule) -> str:
         await self.database.execute(
             """
@@ -182,7 +181,7 @@ class SchedulerStore:
             (rule_id, name, description, trigger_event_type, condition, action_event_type,
              action_payload_template, enabled, cooldown_seconds, last_fired_at, fire_count, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+            """,  # noqa: E501
             (
                 rule.rule_id,
                 rule.name,
@@ -200,7 +199,7 @@ class SchedulerStore:
         )
         await self.database.commit()
         return rule.rule_id
-    
+
     async def get_rule(self, rule_id: str) -> ProactiveRule | None:
         cursor = await self.database.execute(
             "SELECT * FROM proactive_rules WHERE rule_id = ?", (rule_id,)
@@ -209,8 +208,8 @@ class SchedulerStore:
         if not row:
             return None
         return self._row_to_rule(row)
-    
-    async def list_rules(self, enabled_only: bool = False, trigger_type: str | None = None) -> list[ProactiveRule]:
+
+    async def list_rules(self, enabled_only: bool = False, trigger_type: str | None = None) -> list[ProactiveRule]:  # noqa: E501
         query = "SELECT * FROM proactive_rules"
         params = []
         conditions = []
@@ -225,7 +224,7 @@ class SchedulerStore:
         cursor = await self.database.execute(query, tuple(params))
         rows = await cursor.fetchall()
         return [self._row_to_rule(row) for row in rows]
-    
+
     async def update_rule(self, rule: ProactiveRule) -> None:
         await self.database.execute(
             """
@@ -250,14 +249,14 @@ class SchedulerStore:
             ),
         )
         await self.database.commit()
-    
+
     async def delete_rule(self, rule_id: str) -> bool:
         cursor = await self.database.execute(
             "DELETE FROM proactive_rules WHERE rule_id = ?", (rule_id,)
         )
         await self.database.commit()
         return cursor.rowcount > 0
-    
+
     def _row_to_rule(self, row: tuple) -> ProactiveRule:
         return ProactiveRule(
             rule_id=row[0],

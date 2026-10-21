@@ -154,15 +154,17 @@ def test_relative_paths_anchor_to_workspace(tmp_path, monkeypatch):
     assert _write_needs_approval({"path": "fresh.md"}) is False
 
 
-def test_overwrite_needs_approval_hook(tmp_path):
+def test_write_file_never_needs_approval(tmp_path):
     from app.tools.file_tools import _write_needs_approval
 
-    existing = tmp_path / "a.txt"  # absolute, outside the workspace
+    # A5: file edits never require approval — even outside the workspace.
+    existing = tmp_path / "a.txt"
     existing.write_text("old")
 
-    assert _write_needs_approval({"path": str(existing)}) is True
+    assert _write_needs_approval({"path": str(existing)}) is False
     assert _write_needs_approval({"path": str(tmp_path / "b.txt")}) is False
-    assert _write_needs_approval({}) is True  # malformed → fail closed
+    assert _write_needs_approval({"path": "notes.md"}) is False
+    assert _write_needs_approval({}) is False
 
 
 # --- OperationManager ---
@@ -263,7 +265,10 @@ def build_loop(database, scripted, tmp_path):
     return loop, approval_manager, execution_engine
 
 
-async def test_loop_overwrite_returns_pending_approval(database, tmp_path):
+async def test_loop_overwrite_runs_without_approval(database, tmp_path):
+    """A5: overwriting an existing file no longer needs approval — the
+    write happens in the same turn and no pending approval is created."""
+
     target = tmp_path / "existing.md"
     target.write_text("ORIGINAL")
 
@@ -272,18 +277,15 @@ async def test_loop_overwrite_returns_pending_approval(database, tmp_path):
         database,
         scripted=[
             tool_call_response("write_file", arguments),
-            final_response("I need your approval to overwrite that file."),
+            final_response("Overwrote the file."),
         ],
         tmp_path=tmp_path,
     )
 
     response = await loop.handle(UserMessage(content="Overwrite existing.md"))
 
-    assert response.pending_approval is not None
-    assert response.pending_approval["tool_name"] == "write_file"
-    assert response.pending_approval["status"] == "pending"
-    # File untouched while awaiting consent.
-    assert target.read_text() == "ORIGINAL"
+    assert response.pending_approval is None
+    assert target.read_text() == "NEW"
 
 
 async def test_loop_create_new_file_runs_immediately(database, tmp_path):
@@ -307,24 +309,24 @@ async def test_loop_create_new_file_runs_immediately(database, tmp_path):
 
 async def test_approved_operation_executes_bound_arguments(database, tmp_path):
     """Approving runs the exact recorded tool_name/arguments as an
-    operation — the binding (ArchitectureV2 §27)."""
+    operation — the binding (ArchitectureV2 §27). Uses an explicit
+    pending row because file edits no longer prompt (A5)."""
 
     target = tmp_path / "bound.md"
     target.write_text("OLD")
 
-    arguments = json.dumps({"path": str(target), "content": "APPROVED"})
-    loop, approvals, execution = build_loop(
+    _, approvals, execution = build_loop(
         database,
-        scripted=[
-            tool_call_response("write_file", arguments),
-            final_response("Please approve to overwrite."),
-        ],
+        scripted=[final_response("Nothing to do inline.")],
         tmp_path=tmp_path,
     )
+    assert approvals is not None
 
-    response = await loop.handle(UserMessage(content="Overwrite bound.md"))
-    approval_id = response.pending_approval["approval_id"]
-
+    approval_id = await approvals.create_pending(
+        "write_file",
+        {"path": str(target), "content": "APPROVED"},
+        resource=str(target),
+    )
     approved = await approvals.approve(approval_id)
     assert approved["arguments"]["content"] == "APPROVED"
 

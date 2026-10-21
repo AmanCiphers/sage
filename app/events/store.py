@@ -1,18 +1,17 @@
 """Event store for persisting and querying events."""
 
 import json
-from typing import Any
 
-from app.persistence.database import Database
 from app.events.models import Event
+from app.persistence.database import Database
 
 
 class EventStore:
     """Persisted event log with FTS5 search (ArchitectureV2 §37-39)."""
-    
+
     def __init__(self, database: Database):
         self.database = database
-    
+
     async def initialize(self) -> None:
         """Create events table and FTS5 index."""
         await self.database.execute("""
@@ -30,28 +29,28 @@ class EventStore:
         await self.database.execute("""
             CREATE INDEX IF NOT EXISTS idx_events_type_time 
             ON events(event_type, timestamp DESC)
-        """)
+        """)  # noqa: W291
         await self.database.execute("""
             CREATE INDEX IF NOT EXISTS idx_events_correlation 
             ON events(correlation_id)
-        """)
+        """)  # noqa: W291
         await self.database.execute("""
             CREATE INDEX IF NOT EXISTS idx_events_event_id 
             ON events(event_id)
-        """)
+        """)  # noqa: W291
         await self.database.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS events_fts
             USING fts5(payload, event_type UNINDEXED, source UNINDEXED)
         """)
         await self.database.commit()
-    
+
     async def append(self, event: Event) -> None:
         """Persist an event."""
         cursor = await self.database.execute(
             """
             INSERT INTO events (event_id, event_type, source, payload_json, timestamp, sequence_number, correlation_id)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
+            """,  # noqa: E501
             (
                 event.event_id,
                 event.event_type,
@@ -77,7 +76,7 @@ class EventStore:
             ),
         )
         await self.database.commit()
-    
+
     async def get_recent(self, limit: int = 100, event_type: str | None = None) -> list[Event]:
         """Get recent events, optionally filtered by type."""
         if event_type:
@@ -88,7 +87,7 @@ class EventStore:
                 WHERE event_type = ?
                 ORDER BY timestamp DESC
                 LIMIT ?
-                """,
+                """,  # noqa: E501
                 (event_type, limit),
             )
         else:
@@ -98,12 +97,12 @@ class EventStore:
                 FROM events
                 ORDER BY timestamp DESC
                 LIMIT ?
-                """,
+                """,  # noqa: E501
                 (limit,),
             )
         rows = await cursor.fetchall()
         return [self._row_to_event(row) for row in rows]
-    
+
     async def get_by_correlation(self, correlation_id: str) -> list[Event]:
         """Get all events with a given correlation ID (ArchitectureV2 §43)."""
         cursor = await self.database.execute(
@@ -112,12 +111,12 @@ class EventStore:
             FROM events
             WHERE correlation_id = ?
             ORDER BY sequence_number ASC
-            """,
+            """,  # noqa: E501
             (correlation_id,),
         )
         rows = await cursor.fetchall()
         return [self._row_to_event(row) for row in rows]
-    
+
     async def search(self, query: str, limit: int = 20) -> list[Event]:
         """Full-text search over event payloads."""
         cursor = await self.database.execute(
@@ -128,12 +127,12 @@ class EventStore:
             WHERE events_fts MATCH ?
             ORDER BY rank
             LIMIT ?
-            """,
+            """,  # noqa: E501
             (query, limit),
         )
         rows = await cursor.fetchall()
         return [self._row_to_event(row) for row in rows]
-    
+
     def _row_to_event(self, row: tuple) -> Event:
         return Event(
             event_id=row[0],

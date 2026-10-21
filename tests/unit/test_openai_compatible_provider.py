@@ -212,7 +212,7 @@ async def test_generate_sanitizes_polluted_tool_call_names():
                                     "id": "c1",
                                     "type": "function",
                                     "function": {
-                                        "name": "start_task<|channel|>commentary",
+                                        "name": "assign_task<|channel|>commentary",
                                         "arguments": (
                                             "<|channel|>commentary"
                                             '{"objective": "x"}'
@@ -250,5 +250,5 @@ async def test_generate_sanitizes_polluted_tool_call_names():
 
     assert response.tool_calls is not None
     function = response.tool_calls[0]["function"]
-    assert function["name"] == "start_task"
+    assert function["name"] == "assign_task"
     assert json.loads(function["arguments"]) == {"objective": "x"}

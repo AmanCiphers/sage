@@ -34,7 +34,7 @@ async def main() -> None:
         renderer.turn_start()
         try:
             response = await get_response()
-        except Exception as exc:  # noqa: BLE001 — turn-level guard
+        except Exception as exc:
             await renderer.spinner.stop()
             renderer.error(str(exc))
             return AssistantResponse(content="")
@@ -196,7 +196,7 @@ async def main() -> None:
             if sg:
                 print(f"Smart guardian: {'enabled' if sg.enabled else 'disabled'}")
                 print(f"Denial count: {sg.denial_count}")
-                print(f"Circuit breaker threshold: {app.permission_engine.config.denial_breaker_threshold}")
+                print(f"Circuit breaker threshold: {app.permission_engine.config.denial_breaker_threshold}")  # noqa: E501
             else:
                 print(renderer.style.dim("Smart guardian not initialized"))
 

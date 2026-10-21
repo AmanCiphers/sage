@@ -30,7 +30,7 @@ class LLMDecisionEngine:
             tools,
             indent=2,
         )
-    
+
     async def decide(
         self,
         message: UserMessage,

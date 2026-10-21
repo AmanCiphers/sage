@@ -1,22 +1,17 @@
-import asyncio
 import json
 
 import pytest
 
 from app.config import settings
-from app.execution.dispatcher import TaskDispatcher
 from app.execution.engine import ExecutionEngine
-from app.execution.executor import InlineExecutor
 from app.execution.verification import verify
 from app.operations.manager import OperationManager
 from app.permissions.approvals import ApprovalManager
-from app.permissions.engine import PermissionEngine
 from app.persistence.database import Database
 from app.persistence.schema import SCHEMA_SQL, initialize_schema
 from app.persistence.store import TaskStore
 from app.tools.file_tools import register_file_tools
 from app.tools.registry import ToolRegistry
-from app.tools.shell_tools import register_shell_tools
 
 
 @pytest.fixture
@@ -148,58 +143,6 @@ async def test_initialize_schema_adds_verification_columns(tmp_path):
     assert task is not None
     assert task["verification"] is None
     await db.close()
-
-
-# --- dispatcher: verification + approval gate ---
-
-
-def build_dispatcher(database) -> TaskDispatcher:
-    registry = ToolRegistry()
-    register_shell_tools(registry)
-    return TaskDispatcher(
-        task_store=TaskStore(database),
-        permission_engine=PermissionEngine(),
-        registry=registry,
-        executor=InlineExecutor(ExecutionEngine(registry)),
-    )
-
-
-async def test_background_read_only_command_is_verified(database):
-    dispatcher = build_dispatcher(database)
-
-    task_id = await dispatcher.start(
-        objective="echo", tool_name="run_command", arguments={"command": "echo hi"}
-    )
-    await asyncio.gather(*dispatcher._background.values())
-
-    task = await dispatcher.get_status(task_id)
-    assert task["status"] == "completed"
-    assert task["verification"] == "passed"
-
-
-async def test_background_command_failure_fails_verification(database):
-    dispatcher = build_dispatcher(database)
-
-    task_id = await dispatcher.start(
-        objective="missing file",
-        tool_name="run_command",
-        arguments={"command": "cat does_not_exist.txt"},
-    )
-    await asyncio.gather(*dispatcher._background.values())
-
-    task = await dispatcher.get_status(task_id)
-    assert task["status"] == "failed"
-    assert task["verification"] == "failed"
-    assert "verification failed" in task["error"]
-
-
-async def test_state_changing_command_cannot_be_backgrounded(database):
-    dispatcher = build_dispatcher(database)
-
-    with pytest.raises(PermissionError):
-        await dispatcher.start(
-            objective="rm", tool_name="run_command", arguments={"command": "rm -rf x"}
-        )
 
 
 # --- approved operations are verified too ---

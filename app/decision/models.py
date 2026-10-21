@@ -4,7 +4,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
-class DecisionAction(str, Enum):
+class DecisionAction(str, Enum):  # noqa: UP042
     RESPOND = "respond"
     USE_TOOL = "use_tool"
 

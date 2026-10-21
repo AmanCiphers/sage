@@ -69,7 +69,7 @@ class MemoryStore:
             return f"No memory entry matches: {text}"
 
         self._write(self._render(remaining))
-        return f"Removed {len(existing) - len(remaining)} entr{'y' if len(existing) - len(remaining) == 1 else 'ies'}."
+        return f"Removed {len(existing) - len(remaining)} entr{'y' if len(existing) - len(remaining) == 1 else 'ies'}."  # noqa: E501
 
     def clear(self) -> str:
         self._write("")

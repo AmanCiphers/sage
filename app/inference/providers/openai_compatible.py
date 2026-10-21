@@ -149,7 +149,7 @@ class OpenAICompatibleProvider(InferenceProvider):
         from fragments and yielded complete at the end."""
 
         url = f"{self.config.base_url.rstrip('/')}/chat/completions"
-        payload = {**self._payload(request), "stream": True, "stream_options": {"include_usage": True}}
+        payload = {**self._payload(request), "stream": True, "stream_options": {"include_usage": True}}  # noqa: E501
         headers = self._headers
 
         tool_fragments: dict[int, dict] = {}
@@ -248,7 +248,7 @@ class OpenAICompatibleProvider(InferenceProvider):
 def _sanitize_tool_call(tool_call: dict) -> dict:
     """Strip chat-template junk from a tool call.
 
-    The real name always precedes the leak: `start_task` + a streamed
+    The real name always precedes the leak: `assign_task` + a streamed
     `<|channel|>commentary` fragment. Everything from the first `<|` on
     is junk (the trailing `commentary` outside the token too). Arguments
     are salvaged only when the slice between the first `{` and the last

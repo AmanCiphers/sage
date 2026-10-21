@@ -8,10 +8,10 @@ from app.employees.employee import Employee, EmployeeResult
 from app.employees.roster import ROSTER, EmployeeSpec, display_name, get
 
 __all__ = [
+    "ROSTER",
     "Employee",
     "EmployeeResult",
     "EmployeeSpec",
-    "ROSTER",
     "display_name",
     "get",
 ]

@@ -1,9 +1,9 @@
 """Scheduler models for cron-like jobs and recurring tasks."""
 
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
-import uuid
 
 
 @dataclass

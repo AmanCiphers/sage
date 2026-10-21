@@ -116,8 +116,8 @@ def test_router_supports_multiple_requirements():
     )
 
     assert provider.metadata.model_id == "reasoning-model"
-    
-    
+
+
 def test_router_prefers_higher_priority_model():
     registry = ModelRegistry()
 

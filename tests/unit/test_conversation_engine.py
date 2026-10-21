@@ -16,7 +16,7 @@ class StubResponseGenerator:
         tool_result=None,
     ) -> str:
         return str(tool_result)
-    
+
 
 def create_conversation_engine() -> ConversationEngine:
     registry = ToolRegistry()

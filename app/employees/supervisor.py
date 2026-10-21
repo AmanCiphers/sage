@@ -22,8 +22,9 @@ import logging
 
 from app.employees.budgets import Budget
 from app.employees.employee import Employee, EmployeeResult
-from app.employees.factory import build_employee
-from app.employees.roster import EmployeeSpec, display_name, get as get_spec
+from app.employees.factory import build_employee, close_employee
+from app.employees.roster import ROSTER, EmployeeSpec
+from app.employees.roster import get as get_spec
 from app.events.bus import EventBus
 from app.events.models import Event, EventTypes
 from app.inference.manager import InferenceManager
@@ -59,6 +60,8 @@ class Supervisor:
         self._employees: dict[str, Employee] = {}
         # In-flight assignments, keyed by task_id.
         self._background: dict[str, asyncio.Task] = {}
+        # Worker key for each in-flight task_id (for roster_status).
+        self._in_flight: dict[str, str] = {}
 
     async def _employee_for(self, spec: EmployeeSpec) -> Employee:
         employee = self._employees.get(spec.key)
@@ -85,7 +88,7 @@ class Supervisor:
                     payload=payload,
                 )
             )
-        except Exception:  # noqa: BLE001 — telemetry is best-effort
+        except Exception:
             logger.debug("event publish failed", exc_info=True)
 
     async def assign(self, worker: str, objective: str) -> str:
@@ -97,6 +100,7 @@ class Supervisor:
             objective=objective,
             tool_name=f"employee:{spec.key}",
             arguments={},
+            worker=spec.key,
         )
 
         await self._publish(
@@ -112,6 +116,7 @@ class Supervisor:
         self._background[task_id] = asyncio.create_task(
             self._run(task_id, spec, objective)
         )
+        self._in_flight[task_id] = spec.key
 
         logger.info(
             "assignment_created task_id=%s worker=%s", task_id, spec.key
@@ -133,7 +138,7 @@ class Supervisor:
                 objective,
                 on_progress=self._make_progress(task_id, spec),
             )
-        except Exception as exc:  # noqa: BLE001 — report honestly
+        except Exception as exc:
             logger.exception("assignment_failed task_id=%s", task_id)
             await self.task_store.set_status(task_id, "failed", error=str(exc))
             await self._publish(
@@ -141,6 +146,7 @@ class Supervisor:
                 {"task_id": task_id, "worker": spec.key, "error": str(exc)},
             )
             self._background.pop(task_id, None)
+            self._in_flight.pop(task_id, None)
             return
 
         if result.unknown:
@@ -179,6 +185,7 @@ class Supervisor:
             )
 
         self._background.pop(task_id, None)
+        self._in_flight.pop(task_id, None)
 
     def _make_progress(self, task_id: str, spec: EmployeeSpec):
         async def _on_progress(event) -> None:
@@ -209,6 +216,38 @@ class Supervisor:
     async def get_status(self, task_id: str) -> dict | None:
         return await self.task_store.get(task_id)
 
+    def roster_status(self) -> list[dict]:
+        """Snapshot of the roster for the API/UI (Phase 6).
+
+        Additive shape: every roster member, plus whether it has an
+        in-memory loop built and which assignments are running now.
+        """
+
+        running_by_worker: dict[str, list[str]] = {}
+        for task_id, worker in self._in_flight.items():
+            running_by_worker.setdefault(worker, []).append(task_id)
+
+        return [
+            {
+                "worker": spec.key,
+                "id": spec.id,
+                "name": spec.name,
+                "status": (
+                    "active"
+                    if spec.key in running_by_worker
+                    else "standby"
+                ),
+                "running_tasks": running_by_worker.get(spec.key, []),
+            }
+            for spec in ROSTER
+        ]
+
+    async def activity(self, worker: str, limit: int = 20) -> list[dict]:
+        """Recent assignments for one employee (validates the name)."""
+
+        spec = get_spec(worker)  # raises KeyError for unknown worker
+        return await self.task_store.list_for_worker(spec.key, limit=limit)
+
     async def shutdown(self) -> None:
         """Await outstanding assignments; cancel if they overrun."""
 
@@ -217,3 +256,12 @@ class Supervisor:
             logger.info("supervisor_shutdown waiting_on=%s", len(tasks))
             await asyncio.gather(*tasks, return_exceptions=True)
         self._background.clear()
+        self._in_flight.clear()
+
+        employees = list(self._employees.values())
+        self._employees.clear()
+        for employee in employees:
+            try:
+                await close_employee(employee)
+            except Exception:
+                logger.debug("employee close failed", exc_info=True)

@@ -148,7 +148,7 @@ async def test_loop_destructive_tool_requests_approval(database):
         classification=ToolClassification.LOCAL_MUTATION,
         input_schema=None,
         destructive=True,
-        worker_eligible=False,
+        employee_eligible=False,
         handler=lambda: ran.append("executed"),
     )
 

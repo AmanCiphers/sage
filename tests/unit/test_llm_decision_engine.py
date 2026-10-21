@@ -18,8 +18,8 @@ class StubInferenceManager:
             content=self.response,
             model="stub",
         )
-        
-        
+
+
 def create_tool_registry() -> ToolRegistry:
     registry = ToolRegistry()
     register_builtin_tools(registry)

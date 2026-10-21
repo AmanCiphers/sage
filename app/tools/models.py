@@ -5,7 +5,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict
 
 
-class ToolClassification(str, Enum):
+class ToolClassification(str, Enum):  # noqa: UP042
     READ_ONLY = "read_only"
     LOCAL_MUTATION = "local_mutation"
     EXTERNAL_SIDE_EFFECT = "external_side_effect"

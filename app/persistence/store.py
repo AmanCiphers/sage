@@ -167,15 +167,16 @@ class TaskStore:
         objective: str,
         tool_name: str,
         arguments: dict[str, Any],
+        worker: str | None = None,
     ) -> str:
         task_id = f"task_{uuid.uuid4().hex[:10]}"
 
         await self.database.execute(
             """
-            INSERT INTO tasks (task_id, objective, tool_name, arguments_json, status)
-            VALUES (?, ?, ?, ?, 'queued')
+            INSERT INTO tasks (task_id, objective, tool_name, worker, arguments_json, status)
+            VALUES (?, ?, ?, ?, ?, 'queued')
             """,
-            (task_id, objective, tool_name, json.dumps(arguments)),
+            (task_id, objective, tool_name, worker, json.dumps(arguments)),
         )
         await self.database.commit()
 
@@ -244,7 +245,7 @@ class TaskStore:
     async def get(self, task_id: str) -> dict[str, Any] | None:
         cursor = await self.database.execute(
             """
-            SELECT task_id, objective, tool_name, arguments_json, status,
+            SELECT task_id, objective, tool_name, worker, arguments_json, status,
                    result, error, verification, verification_detail,
                    created_at, started_at, completed_at
             FROM tasks
@@ -257,8 +258,8 @@ class TaskStore:
         if row is None:
             return None
 
-        started = row[9]
-        completed = row[10]
+        started = row[11]
+        completed = row[12]
         duration_sec = None
         if started and completed:
             try:
@@ -273,30 +274,46 @@ class TaskStore:
             "task_id": row[0],
             "objective": row[1],
             "tool_name": row[2],
-            "arguments": json.loads(row[3]),
-            "status": row[4],
-            "result": row[5],
-            "error": row[6],
-            "verification": row[7],
-            "verification_detail": row[8],
-            "created_at": row[9],
-            "started_at": row[10],
-            "completed_at": row[11],
+            "worker": row[3],
+            "arguments": json.loads(row[4]),
+            "status": row[5],
+            "result": row[6],
+            "error": row[7],
+            "verification": row[8],
+            "verification_detail": row[9],
+            "created_at": row[10],
+            "started_at": row[11],
+            "completed_at": row[12],
             "duration_seconds": duration_sec,
         }
 
     async def list_recent(self, limit: int = 50) -> list[dict[str, Any]]:
         """List recent tasks, newest first (for the web worker panel)."""
+        return await self._list(limit)
+
+    async def list_for_worker(self, worker: str, limit: int = 20) -> list[dict[str, Any]]:
+        """Recent assignments for one employee (lowercase key)."""
+        return await self._list(limit, worker=worker)
+
+    async def _list(
+        self,
+        limit: int,
+        worker: str | None = None,
+    ) -> list[dict[str, Any]]:
+        where = "WHERE worker = ?" if worker is not None else ""
+        params: tuple[Any, ...] = (worker, limit) if worker is not None else (limit,)
+
         cursor = await self.database.execute(
-            """
-            SELECT task_id, objective, tool_name, arguments_json, status,
+            f"""
+            SELECT task_id, objective, tool_name, worker, arguments_json, status,
                    result, error, verification, verification_detail,
                    created_at, started_at, completed_at
             FROM tasks
+            {where}
             ORDER BY created_at DESC
             LIMIT ?
             """,
-            (limit,),
+            params,
         )
         rows = await cursor.fetchall()
 
@@ -307,14 +324,15 @@ class TaskStore:
                     "task_id": row[0],
                     "objective": row[1],
                     "tool_name": row[2],
-                    "arguments": json.loads(row[3]),
-                    "status": row[4],
-                    "error": row[6],
-                    "verification": row[7],
-                    "verification_detail": row[8],
-                    "created_at": row[9],
-                    "started_at": row[10],
-                    "completed_at": row[11],
+                    "worker": row[3],
+                    "arguments": json.loads(row[4]),
+                    "status": row[5],
+                    "error": row[7],
+                    "verification": row[8],
+                    "verification_detail": row[9],
+                    "created_at": row[10],
+                    "started_at": row[11],
+                    "completed_at": row[12],
                 }
             )
         return tasks

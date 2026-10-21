@@ -174,7 +174,11 @@ Changes from the web-UI integration work that were **not** recorded in
 
 # Part B — Proposed: Employee Workers
 
-**Status: proposed, not built.** Captured here so the direction is not lost.
+**Status: built (2026-10-21).** The direction below was implemented as the
+Worker-Employee system (`app/employees/`) and recorded as **D28** in
+`DECISIONS.md`; the old process-worker system was deleted. Kept here as the
+design record.
+
 This is a *new layer above* the existing executor-worker, not a rewrite of it
 (see D24).
 

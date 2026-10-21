@@ -1,12 +1,13 @@
-from datetime import datetime
 import json
+from datetime import datetime
 from typing import Any
+
+from pydantic import Field
+
+from app.permissions.detection import is_read_only_command
 
 from .models import ToolClassification, ToolDefinition
 from .schemas import ToolInput
-from app.permissions.detection import is_read_only_command
-from app.permissions.engine import PermissionEngine
-from app.permissions.config import get_permission_config
 
 
 class CurrentTimeInput(ToolInput):
@@ -42,7 +43,7 @@ class ScheduleJobInput(ToolInput):
     name: str
     cron_expression: str
     event_type: str
-    payload_template: dict[str, Any] = {}
+    payload_template: dict[str, Any] = Field(default_factory=dict)
     max_runs: int | None = None
 
 
@@ -74,7 +75,7 @@ class AddProactiveRuleInput(ToolInput):
     trigger_event_type: str
     condition: str
     action_event_type: str
-    action_payload_template: dict[str, Any] = {}
+    action_payload_template: dict[str, Any] = Field(default_factory=dict)
     cooldown_seconds: int = 300
 
 
@@ -91,15 +92,16 @@ async def analyze(paths: list[str], objective: str) -> str:
     """Analyze files and directories to produce a summary.
     
     Uses read_file and list_files internally. Worker-eligible for background execution.
-    """
-    from app.tools.file_tools import read_file, list_files
-    from app.config import settings
+    """  # noqa: W293
     from pathlib import Path
-    
+
+    from app.config import settings
+    from app.tools.file_tools import list_files, read_file
+
     results = []
     workspace = settings.workspace_path.expanduser().resolve()
     project_root = Path(__file__).resolve().parents[2]
-    
+
     for path_str in paths:
         path = Path(path_str).expanduser()
         if not path.is_absolute():
@@ -109,11 +111,11 @@ async def analyze(paths: list[str], objective: str) -> str:
                 path = workspace_path
             else:
                 project_path = (project_root / path).resolve()
-                if project_path.exists():
+                if project_path.exists():  # noqa: SIM108
                     path = project_path
                 else:
                     path = workspace_path  # Default to workspace for error message
-        
+
         if path.is_file():
             result = read_file(str(path), offset=0, limit=200)
             results.append(f"FILE: {path_str}\n{result}")
@@ -122,16 +124,16 @@ async def analyze(paths: list[str], objective: str) -> str:
             results.append(f"DIR: {path_str}\n{result}")
         else:
             results.append(f"NOT FOUND: {path_str}")
-    
+
     # Build summary context
     context = "\n\n---\n\n".join(results)
-    
+
     summary = {
         "objective": objective,
         "paths_analyzed": paths,
         "context": context[:50000],  # Cap context size
     }
-    
+
     return json.dumps(summary)
 
 
@@ -140,11 +142,8 @@ def _run_command_requires_approval(arguments: dict) -> bool:
     cmd = arguments.get("command", "")
     if not cmd:
         return True
-    # Read-only commands don't need approval
-    if is_read_only_command(cmd):
-        return False
-    # Everything else needs approval
-    return True
+    # Read-only commands don't need approval; everything else does.
+    return not is_read_only_command(cmd)
 
 
 def _scheduler_requires_approval(arguments: dict) -> bool:

@@ -370,6 +370,11 @@ dangerous background command would have run without consent.
 
 ## D24 — Process-per-task workers behind the dispatcher seam
 
+> **Superseded by D28.** The process-worker system (`app/execution/worker.py`,
+> `executor.py`, `protocol.py`, `dispatcher.py`) was removed and replaced by
+> the Worker-Employee system (`app/employees/`). This entry is kept for the
+> reasoning that still holds (honest `unknown`, SAGE-side trust, the seam).
+
 **Decision:**
 - **Worker = separate OS process**, one per task: `python -m app.execution.worker`
   connects to a per-task Unix Domain Socket, receives exactly one `TASK`
@@ -501,3 +506,61 @@ behaviour identical between CLI and web and avoids drift. Live-verified:
 `POST /api/chat` → `Good afternoon, Sir. …` with
 `11934 in / 75 out / deepseek-ai/DeepSeek-V4-Flash-0731`, and the
 WebSocket stream delivered live deltas then a final `chat_done`.
+
+---
+
+# Phase 12 — Worker-Employee system
+
+## D28 — Employees replace process-workers; SAGE judges, the engine backstops
+
+**Decision:**
+- **The process-worker system is removed, not wrapped.** `app/execution/worker.py`,
+  `executor.py`, `protocol.py`, and `dispatcher.py` are deleted. The old
+  design — one OS subprocess per task over a Unix socket, exactly one tool,
+  raw result, **no mind** — is replaced by a new layer (`app/employees/`).
+  D24/§52–54 scaling, pools, and worker leases are obsolete with it.
+- **An employee is an agent, not a subprocess.** The roster is a fixed five —
+  **Asta, Otto, Tony, Alpha, Charlie** (lowercase ids `asta`…, `employee-asta`,
+  cased display names). Each employee has its own `ConversationLoop`, a
+  filtered tool registry (`employee_eligible` tools), its own memory and
+  workspace (`data/employees/<key>/`), and a slim role card — a mandate, not
+  a personality. Employees **report to SAGE** and never address the user;
+  SAGE stays the single point of contact.
+- **Identity-persistent, process-lazy (N3).** The roster is permanent; an
+  employee's loop is built only when it is first assigned work, runs as a
+  lazy asyncio task inside SAGE's process, then idles. No idle burn, no
+  dynamic pool.
+- **SAGE dispatches goals, not tools.** `start_task(tool, args)` becomes
+  `assign_task(worker, objective)`. The frozen contract SAGE depends on is
+  `assign(worker, objective) -> task_id`, `get_status(task_id) -> dict`,
+  `recover() -> int`; `task_status` keeps every old key (additive only).
+  `Supervisor` (the seam) replaces `TaskDispatcher`.
+- **Per-assignment hard budgets are mandatory (N8).** `max_iterations`,
+  `max_tokens`, `max_wall_seconds`, and a kill switch. A breach ends the
+  assignment honestly — `failed`, or `unknown` when the outcome is genuinely
+  indeterminate. Leftover `queued`/`running` rows from a previous process
+  recover to `unknown` (§12/§47, unchanged).
+- **Permission philosophy change (N5).** The original principle (D1/D22) was
+  *"the LLM never declares an action safe."* We are moving to **SAGE judges;
+  the `PermissionEngine` is a final safety checkpoint** rather than the sole
+  arbiter. Rationale: approval overhead does not scale to N autonomous
+  employees. Guardrails that keep this honest:
+  - an **immutable hard-block list** the engine enforces *before* anything
+    else, which SAGE cannot override — filesystem destruction outside the
+    workspace sandbox, writes escaping the sandbox root, exfiltration of
+    secrets to the network, and privilege escalation;
+  - **post-hoc verification** of real outcomes stays (D23);
+  - every permission decision is **logged** for audit.
+- **Consequence already shipped (A5):** file edits (`write_file`, `patch`)
+  never require approval — the engine only backstops the hard-block list.
+  `remove_job`/`remove_rule` are likewise non-destructive.
+
+**Why:** the manager-butler model — one trusted principal the user talks to,
+with named employees doing bounded autonomous work — is the only shape that
+scales to more background work without an approval storm, and it replaces a
+mindless subprocess with something that can actually pursue an objective.
+`HOW_IT_WORKS.md` documents the frozen contract and the runtime.
+
+**Open (deferred):** the second rung of the hard-block list (an LLM verifier),
+per-employee tool allowlists layered on `employee_eligible`, and the UI
+roster/activity panel (Phase 9, API already exposed at `/api/workers*`).
