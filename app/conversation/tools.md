@@ -31,9 +31,15 @@ This document guides *when and why* to choose each tool.
   agent loop with its own tools and memory until the objective is done.
   Returns `task_id` immediately; the conversation stays free.
   Use for: substantial multi-step work, long-running jobs, research.
+  Match the employee to the work: **Asta** survey/reconnaissance,
+  **Otto** writing/drafting, **Tony** verification/fact-checking,
+  **Alpha** research/analysis, **Charlie** organizing/operations.
 - `task_status(task_id)` — Poll status, result, and verification.
+  Also returns `stage`, `last_tool`, `iterations`, `elapsed_seconds`, and
+  `seconds_since_activity` — use these to tell "working" from "stalled"
+  instead of guessing from the status word alone.
 - Employees decide their own tool use inside the assignment; you do not
-  pick the tool. Pick the **worker** and state the **objective** clearly.
+  pick the tool. Pick the **employee** and state the **objective** clearly.
 
 ## Selection Heuristics
 

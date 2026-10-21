@@ -418,6 +418,18 @@ async def worker_activity(name: str, limit: int = 20):
         return {"error": str(e), "activity": []}
 
 
+@app.get("/api/notices")
+async def pending_notices():
+    """Drain employee-completion notices for idle delivery.
+
+    The front end polls this when SAGE is not mid-response, so a finished
+    assignment is announced between turns without interrupting a reply.
+    """
+    if not sage_app:
+        return {"notices": []}
+    return {"notices": sage_app.completion_notifier.drain()}
+
+
 @app.get("/api/scheduler/jobs")
 async def list_scheduler_jobs():
     if not sage_app or not sage_app.scheduler:

@@ -19,6 +19,7 @@ from app.inference.fake import FakeInferenceProvider
 from app.inference.manager import InferenceManager
 from app.inference.models import InferenceResponse, ModelCapabilities
 from app.inference.registry import ModelRegistry
+from app.notifications.completion import CompletionNotifier
 from app.permissions.engine import PermissionEngine
 from app.persistence.database import Database
 from app.persistence.schema import initialize_schema
@@ -303,9 +304,157 @@ async def test_recover_marks_stuck_assignments_unknown(database):
     assert task["status"] == "unknown"
 
 
+async def test_task_status_surfaces_progress_fields(database):
+    tools = ToolRegistry()
+    register_file_tools(tools)
+    supervisor = build_supervisor(
+        database,
+        registry=tools,
+        scripted=[
+            InferenceResponse(
+                model="fake",
+                tool_calls=[
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": '{"path": "a.md", "content": "1"}',
+                        },
+                    }
+                ],
+            ),
+            InferenceResponse(model="fake", content="done"),
+        ],
+    )
+
+    captured: dict = {}
+
+    # Observe progress mid-run by wrapping the progress callback the
+    # supervisor hands the employee.
+    original = supervisor._make_progress
+
+    def _spy(task_id, spec):
+        cb = original(task_id, spec)
+
+        async def _wrapped(event):
+            await cb(event)
+            status = await supervisor.get_status(task_id)
+            captured.update(status or {})
+
+        return _wrapped
+
+    supervisor._make_progress = _spy  # type: ignore[method-assign]
+
+    task_id = await supervisor.assign("asta", "write a.md")
+    await asyncio.gather(*supervisor._background.values())
+
+    # Mid-run snapshot carried live progress.
+    assert captured["stage"] in ("llm_start", "tool_start", "tool_end")
+    assert captured["last_tool"] == "write_file"
+    assert captured["iterations"] >= 1
+    assert captured["seconds_since_activity"] is not None
+
+    # After completion the task is terminal and progress is cleared.
+    final = await supervisor.get_status(task_id)
+    assert final["status"] == "completed"
+    assert final["stage"] is None
+
+
+# --- Honest verification of employee results ---
+
+
+def test_every_roster_member_has_a_role_card():
+    from app.employees.factory import _load_role_card
+
+    for spec in ROSTER:
+        card = _load_role_card(spec.key)
+        # A bespoke card exists (not the generic fallback).
+        assert "You are an employee working under SAGE." not in card
+        assert spec.name in card
+        assert spec.role_card == f"{spec.key}.md"
+
+
+async def test_completion_notifier_queues_and_drains_fifo():
+    from app.events.models import Event, EventTypes
+
+    notifier = CompletionNotifier()
+
+    await notifier.handle_event(
+        Event(
+            event_type=EventTypes.EMPLOYEE_FINISHED,
+            source="employee",
+            payload={"task_id": "task_1", "name": "Asta", "summary": "did it"},
+        )
+    )
+    await notifier.handle_event(
+        Event(
+            event_type=EventTypes.TASK_FAILED,
+            source="employee",
+            payload={"task_id": "task_2", "name": "Otto", "error": "boom"},
+        )
+    )
+    # Irrelevant events are ignored.
+    await notifier.handle_event(
+        Event(event_type="user_message", source="cli", payload={})
+    )
+
+    notices = notifier.drain()
+    assert len(notices) == 2
+    assert "Asta" in notices[0] and "task_1" in notices[0]
+    assert "Otto" in notices[1] and "boom" in notices[1]
+    assert notifier.drain() == []
+
+
+async def test_read_only_task_reports_unverified(database):
+    supervisor = build_supervisor(
+        database,
+        scripted=[InferenceResponse(model="fake", content="all done")],
+    )
+
+    task_id = await supervisor.assign("asta", "just think about it")
+    await asyncio.gather(*supervisor._background.values())
+
+    task = await supervisor.get_status(task_id)
+    assert task["status"] == "completed"
+    assert task["verification"] == "unverified"
+    assert "no side-effecting tool" in task["verification_detail"]
+
+
+async def test_side_effecting_task_reports_self_verified(database):
+    tools = ToolRegistry()
+    register_file_tools(tools)
+    supervisor = build_supervisor(
+        database,
+        registry=tools,
+        scripted=[
+            InferenceResponse(
+                model="fake",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": '{"path": "out.md", "content": "x"}',
+                        },
+                    }
+                ],
+            ),
+            InferenceResponse(model="fake", content="wrote the file"),
+        ],
+    )
+
+    task_id = await supervisor.assign("asta", "write out.md")
+    await asyncio.gather(*supervisor._background.values())
+
+    task = await supervisor.get_status(task_id)
+    assert task["status"] == "completed"
+    assert task["verification"] == "self-verified"
+    assert "write_file" in task["verification_detail"]
+
+
 # --- Employee dataclass surface ---
-
-
 def test_employee_exposes_id_and_name():
     spec = get_spec("alpha")
     employee = Employee(

@@ -91,7 +91,7 @@ class AnalyzeInput(ToolInput):
 async def analyze(paths: list[str], objective: str) -> str:
     """Analyze files and directories to produce a summary.
     
-    Uses read_file and list_files internally. Worker-eligible for background execution.
+    Uses read_file and list_files internally. Employee-eligible for background execution.
     """  # noqa: W293
     from pathlib import Path
 
@@ -229,6 +229,12 @@ def register_builtin_tools(registry, supervisor=None) -> None:
             "verification_detail": task.get("verification_detail"),
             "result": task["result"],
             "error": task["error"],
+            "stage": task.get("stage"),
+            "last_tool": task.get("last_tool"),
+            "iterations": task.get("iterations"),
+            "elapsed_seconds": task.get("duration_seconds"),
+            "last_activity_at": task.get("last_activity_at"),
+            "seconds_since_activity": task.get("seconds_since_activity"),
         }
 
     registry.register(

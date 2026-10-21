@@ -34,7 +34,14 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class EmployeeResult:
-    """Outcome of one assignment."""
+    """Outcome of one assignment.
+
+    `verification` is the employee's own evidence level, not a guarantee:
+    - "self-verified": a side-effecting tool completed successfully, so the
+      employee observed a real change (file written, command run, ...).
+    - "unverified": the employee only read/reasoned — its claim is its word.
+    SAGE reports this honestly; it is never upgraded on SAGE's behalf.
+    """
 
     success: bool
     output: str | None = None
@@ -43,6 +50,8 @@ class EmployeeResult:
     iterations: int = 0
     tokens: int = 0
     elapsed_seconds: float = 0.0
+    verification: str = "unverified"
+    verification_detail: str | None = None
 
 
 @dataclass
@@ -81,15 +90,36 @@ class Employee:
 
         try:
             # Iteration/token ceilings are enforced by wrapping the event
-            # stream: each llm_start is one iteration.
+            # stream: each llm_start is one iteration. We also watch for
+            # successful side-effecting tools so we can report honest
+            # verification instead of a blanket "unverified".
+            side_effects: list[str] = []
+
             async def _guarded(event: LoopEvent) -> None:
                 if event.type == "llm_start":
                     tracker.start_iteration()
+                elif (
+                    event.type == "tool_end"
+                    and event.success
+                    and event.tool_name
+                    and self._is_side_effecting(event.tool_name)
+                    and event.tool_name not in side_effects
+                ):
+                    side_effects.append(event.tool_name)
                 await _bridge(event)
 
             self.loop.on_event = _guarded
 
             response = await self.loop.handle(UserMessage(content=objective))
+
+            if side_effects:
+                verification = "self-verified"
+                detail = "employee ran side-effecting tool(s): " + ", ".join(
+                    side_effects
+                )
+            else:
+                verification = "unverified"
+                detail = "employee result (no side-effecting tool observed)"
 
             return EmployeeResult(
                 success=True,
@@ -97,6 +127,8 @@ class Employee:
                 iterations=tracker.iterations,
                 tokens=tracker.tokens,
                 elapsed_seconds=tracker.elapsed,
+                verification=verification,
+                verification_detail=detail,
             )
 
         except BudgetExceeded as exc:
@@ -134,3 +166,18 @@ class Employee:
     @property
     def name(self) -> str:
         return self.spec.name
+
+    def _is_side_effecting(self, tool_name: str) -> bool:
+        """True when the tool mutates state (so its success is evidence)."""
+
+        from app.tools.models import ToolClassification
+
+        try:
+            tool = self.loop.tool_registry.get(tool_name)
+        except KeyError:
+            return False
+
+        return tool.classification in (
+            ToolClassification.LOCAL_MUTATION,
+            ToolClassification.EXTERNAL_SIDE_EFFECT,
+        )

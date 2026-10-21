@@ -128,6 +128,11 @@ user <-------- SAGE narrates results <--- EventBus (employee_* / task_* events)
   `unknown` = outcome cannot be determined (budget breach mid-action,
   cancel). On startup, leftover `queued`/`running` assignments from a
   previous SAGE run are marked `unknown` — their employee is gone.
+- **Employee verification** is the employee's own evidence level, reported
+  honestly and never upgraded by SAGE: `self-verified` = a side-effecting
+  tool completed successfully (a real change was observed); `unverified` =
+  the employee only read and reasoned, so its claim is its word. This is
+  distinct from `unknown`, which means the outcome itself is indeterminate.
 - **Employees never talk to the user**: they report to SAGE, which
   narrates. SAGE is the single point of contact.
 

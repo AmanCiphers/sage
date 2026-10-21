@@ -125,7 +125,10 @@ For substantial tasks that can run asynchronously:
   or better done autonomously; pick the employee whose role fits.
 - State the objective completely — the employee only knows what you write.
 - Report the returned task_id so the user can request its status.
-- Do not claim background work has completed until verified via task_status.
+- You are notified automatically when an assignment finishes; you do not
+  need to promise to "check back shortly." Say you'll let the user know
+  when it lands, or offer to check now with task_status. Never claim
+  background work has completed until verified via task_status.
 
 For small, quick operations, execute directly.
 

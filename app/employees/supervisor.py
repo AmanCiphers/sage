@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from app.employees.budgets import Budget
 from app.employees.employee import Employee, EmployeeResult
@@ -62,6 +63,8 @@ class Supervisor:
         self._background: dict[str, asyncio.Task] = {}
         # Worker key for each in-flight task_id (for roster_status).
         self._in_flight: dict[str, str] = {}
+        # Live progress per in-flight task_id (stage, last tool, ...).
+        self._progress: dict[str, dict] = {}
 
     async def _employee_for(self, spec: EmployeeSpec) -> Employee:
         employee = self._employees.get(spec.key)
@@ -147,6 +150,7 @@ class Supervisor:
             )
             self._background.pop(task_id, None)
             self._in_flight.pop(task_id, None)
+            self._progress.pop(task_id, None)
             return
 
         if result.unknown:
@@ -171,8 +175,8 @@ class Supervisor:
                 task_id,
                 "completed",
                 result=output,
-                verification="unverified",
-                verification_detail="employee result (no deterministic verifier)",
+                verification=result.verification,
+                verification_detail=result.verification_detail,
             )
             await self._publish(
                 EventTypes.EMPLOYEE_FINISHED,
@@ -186,11 +190,21 @@ class Supervisor:
 
         self._background.pop(task_id, None)
         self._in_flight.pop(task_id, None)
+        self._progress.pop(task_id, None)
 
     def _make_progress(self, task_id: str, spec: EmployeeSpec):
         async def _on_progress(event) -> None:
-            # Surface meaningful employee loop events on the bus.
+            # Surface meaningful employee loop events on the bus, and keep a
+            # live snapshot so task_status can tell progress from a stall.
             if event.type in ("llm_start", "tool_start", "tool_end"):
+                snapshot = self._progress.setdefault(task_id, {})
+                snapshot["stage"] = event.type
+                snapshot["updated_at"] = time.time()
+                if event.type == "llm_start":
+                    snapshot["iterations"] = snapshot.get("iterations", 0) + 1
+                tool_name = getattr(event, "tool_name", None)
+                if tool_name:
+                    snapshot["last_tool"] = tool_name
                 await self._publish(
                     EventTypes.EMPLOYEE_ACTIVITY,
                     {
@@ -198,7 +212,7 @@ class Supervisor:
                         "worker": spec.key,
                         "name": spec.name,
                         "stage": event.type,
-                        "tool": getattr(event, "tool_name", None),
+                        "tool": tool_name,
                     },
                 )
 
@@ -214,7 +228,22 @@ class Supervisor:
         return recovered
 
     async def get_status(self, task_id: str) -> dict | None:
-        return await self.task_store.get(task_id)
+        task = await self.task_store.get(task_id)
+        if task is None:
+            return None
+
+        # Additive progress fields: let callers tell "running productively"
+        # from "stuck" instead of guessing from the status word alone.
+        progress = self._progress.get(task_id, {})
+        task["stage"] = progress.get("stage")
+        task["last_tool"] = progress.get("last_tool")
+        task["iterations"] = progress.get("iterations")
+        updated_at = progress.get("updated_at")
+        task["last_activity_at"] = updated_at
+        task["seconds_since_activity"] = (
+            round(time.time() - updated_at, 1) if updated_at else None
+        )
+        return task
 
     def roster_status(self) -> list[dict]:
         """Snapshot of the roster for the API/UI (Phase 6).

@@ -207,6 +207,12 @@ async def main() -> None:
 
     try:
         while True:
+            # Safe boundary: SAGE is idle here (no response streaming), so
+            # any employee-completion notices can be shown without cutting
+            # into a reply.
+            for notice in app.completion_notifier.drain():
+                renderer.note(f"\n[SAGE] {notice}")
+
             try:
                 user_input = await asyncio.to_thread(
                     input,

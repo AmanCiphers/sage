@@ -24,11 +24,11 @@ class EmployeeSpec:
 
 
 ROSTER: tuple[EmployeeSpec, ...] = (
-    EmployeeSpec(key="asta", name="Asta"),
-    EmployeeSpec(key="otto", name="Otto"),
-    EmployeeSpec(key="tony", name="Tony"),
-    EmployeeSpec(key="alpha", name="Alpha"),
-    EmployeeSpec(key="charlie", name="Charlie"),
+    EmployeeSpec(key="asta", name="Asta", role_card="asta.md"),
+    EmployeeSpec(key="otto", name="Otto", role_card="otto.md"),
+    EmployeeSpec(key="tony", name="Tony", role_card="tony.md"),
+    EmployeeSpec(key="alpha", name="Alpha", role_card="alpha.md"),
+    EmployeeSpec(key="charlie", name="Charlie", role_card="charlie.md"),
 )
 
 _BY_KEY = {spec.key: spec for spec in ROSTER}
@@ -39,12 +39,12 @@ def normalize(worker: str) -> str:
     """Accept a key, display name, or id; return the lowercase key.
 
     Case-insensitive so the LLM/user can't trip on casing.
-    Raises KeyError for unknown workers.
+    Raises KeyError for unknown employees.
     """
 
     raw = (worker or "").strip()
     if not raw:
-        raise KeyError("empty worker name")
+        raise KeyError("empty employee name")
 
     if raw in _BY_KEY:
         return raw
@@ -56,7 +56,7 @@ def normalize(worker: str) -> str:
     if lowered.startswith("employee-") and lowered[len("employee-") :] in _BY_KEY:
         return lowered[len("employee-") :]
 
-    raise KeyError(f"unknown worker: {worker}")
+    raise KeyError(f"unknown employee: {worker}")
 
 
 def get(worker: str) -> EmployeeSpec:
