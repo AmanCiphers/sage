@@ -1,83 +1,100 @@
-# SAGE — Strategic Advisory & Guidance Engine
+# SAGE — Self-Organizing Agent Gateway Engine
 
-A personal agent: an agentic loop with memory, tools, background workers,
-approvals, and a scheduler — plus a Next.js control UI.
+A local-first multi-agent system with specialized AI employees, RAG-powered context, and dual backend support (OpenCode + Hermes).
 
-See `ArchitectureV2.md` for the design and `docs/DECISIONS.md` for the
-running log of decisions (D1+). `docs/HOW_IT_WORKS.md` explains the
-runtime. `docs/CHANGELOG.md` records recent architecture changes and the
-proposed employee-worker direction.
-
-## Requirements
-
-- Python >= 3.11 (a `.venv` is expected at the repo root)
-- Node.js + npm (for the web UI under `web/`)
-
-## Setup
+## Quick Start
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-cd web && npm install && cd ..
-```
-
-Provider keys live in `.env` (see `.env.example`). The primary provider is
-Nebius `deepseek-ai/DeepSeek-V4-Flash-0731`; NVIDIA `openai/gpt-oss-20b` is
-the fallback.
-
-## Run the CLI
-
-```bash
+# CLI
 python main.py
-```
 
-Useful slash commands: `/profile`, `/memory`, `/search`, `/help`.
-
-## Run the Web UI
-
-One command starts the FastAPI backend (port 8000) and the Next.js
-frontend (port 3000):
-
-```bash
+# Web UI (requires 2 terminals)
 ./start-web.sh
+# Or manually:
+# Terminal 1: PYTHONPATH=. python -m uvicorn web.backend:app --reload
+# Terminal 2: cd web && npm run dev
 ```
 
-Then open http://localhost:3000.
+## Features
 
-### Running the pieces separately
+- **5 Specialized Employees** — Auto-routed by task type:
+  - **Charlie** (Coder) — Next.js, React, Python, OpenCode, builds
+  - **Alpha** (Research) — Analysis, investigation, deep research
+  - **Asta** (Survey/Org) — Organization, listing, cataloging
+  - **Otto** (Writer) — Drafting, documentation, content creation
+  - **Tony** (Verification) — Validation, checking, quality assurance
 
-The backend must be launched with the repo root on `PYTHONPATH`, otherwise
-`from app...` imports fail:
+- **Dual Agent Backends**
+  - **OpenCode** — Nebius DeepSeek-V4-Flash (chat) + NVIDIA embeddings
+  - **Hermes** — Local/remote LLM backend (configured, ready to test)
 
-```bash
-PYTHONPATH="$PWD" python -m uvicorn web.backend:app --host 0.0.0.0 --port 8000 --reload
+- **RAG Pipeline** — FTS5 full-text search + vector embeddings (NVIDIA Nemotron-3-Embed-1B, 1024-dim) with hybrid scoring (40% FTS5 + 60% cosine)
+
+- **Per-Employee Isolation** — Each employee has own SQLite DB (with FTS5 + vector tables), workspace, and budget controls
+
+- **Auto-Init on Startup** — Employee databases, schemas, and `agent_sessions` table created automatically
+
+## Architecture
+
+```
+SAGE/
+├── app/                    # Core application
+│   ├── agents/            # OpenCode & Hermes backends
+│   ├── employees/         # Employee factory, supervisor, budgets
+│   ├── context/           # RAG context builder
+│   ├── embeddings/        # Embedding providers (NVIDIA)
+│   ├── application.py     # App wiring + DB auto-init
+│   └── config.py          # Configuration
+├── web/                   # Next.js + FastAPI web UI
+├── data/employees/        # Per-employee DBs & workspaces
+├── main.py                # CLI entry point
+└── start-web.sh           # Web UI launcher
 ```
 
-```bash
-cd web && npm run dev   # http://localhost:3000
-```
-
-Backend endpoints: `POST /api/chat`, `GET /api/tools`, `GET /api/events`,
-`GET/POST/DELETE /api/scheduler/jobs`, `GET/POST /api/scheduler/rules`
-(`/api/proactive/rules` alias), `GET/POST /api/approvals`, and the chat
-WebSocket at `ws://localhost:8000/ws/sage`.
-
-## Tests and lint
+## Commands
 
 ```bash
+# Tests
 python -m pytest tests/unit -q
-ruff check app main.py tests
+
+# Lint
+ruff check app
+
+# Web build
+cd web && npm run build
+
+# Backfill embeddings
+python scripts/backfill_embeddings.py
 ```
 
-## Project layout
+## Configuration
 
-- `app/` — agent runtime (conversation, context, inference, tools,
-  execution, memory, events, scheduler, permissions)
-- `web/` — Next.js UI and `web/backend.py` (FastAPI adapter over the same
-  `SAGEApplication` the CLI uses)
-- `config/` — model catalog and settings
-- `data/` — `memory.md` and `sage.db` (SQLite)
-- `docs/` — decisions and architecture notes
-- `tests/` — unit and integration tests
+- **OpenCode config**: `~/.config/opencode/opencode.jsonc`
+- **Environment**: `.env` (API keys for Nebius, NVIDIA)
+- **Model**: `nebius/deepseek-ai/DeepSeek-V4-Flash-0731` (provider prefix required)
+
+## Status
+
+| Component | Status |
+|-----------|--------|
+| CLI | ✅ Working |
+| Web UI (Next.js + FastAPI) | ✅ Working |
+| Unit Tests (160) | ✅ Passing |
+| Lint (ruff) | ✅ Clean |
+| Web Build | ✅ Clean |
+| Employee DBs | ✅ Auto-init |
+| OpenCode Backend | ✅ Working |
+| Hermes Backend | ✅ Configured |
+| RAG (FTS5 + Embeddings) | ✅ Working |
+| Auto-assign Employee | ✅ Working |
+
+## Known Issues
+
+- FTS5 syntax errors on backslash (non-fatal, logged as warning)
+- Per-employee log files not yet implemented
+- OpenCode session resume (`--continue`) untested
+- Hermes backend untested in practice
+
+## License
+
+MIT
