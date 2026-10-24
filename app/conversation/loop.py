@@ -80,6 +80,11 @@ class ConversationLoop:
         self.model_requirements = model_requirements or ModelRequirements(tool_calling=True)
         self.logger = get_logger(__name__)
 
+        # Anti-poll circuit breaker: count consecutive identical task_status
+        # polls that returned a still-running status, per task_id.
+        self._task_polls: dict[str, int] = {}
+        self._MAX_REPEATED_POLLS = 2
+
         # UI hook: notified of turn activity (LLM calls, tool rounds).
         # Set by the CLI/Web layer after construction.
         self.on_event: Callable[[LoopEvent], Awaitable[None]] | None = None
@@ -90,6 +95,17 @@ class ConversationLoop:
         result = self.on_event(event)
         if inspect.isawaitable(result):
             await result
+
+    @staticmethod
+    def _poll_task_id(call: dict) -> str | None:
+        """Extract the task_id from a task_status tool call, if present."""
+        raw = call.get("function", {}).get("arguments", "{}")
+        try:
+            args = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        except json.JSONDecodeError:
+            return None
+        tid = args.get("task_id")
+        return str(tid) if tid else None
 
     async def handle(self, message: UserMessage) -> AssistantResponse:
         return await self._run_turn(message, on_delta=None)
@@ -262,6 +278,21 @@ class ConversationLoop:
             result, approval_id = await self._execute_call(call)
             duration_ms = (time.perf_counter() - started) * 1000
             tool_call_id = call.get("id", "unknown")
+
+            # Anti-poll circuit breaker: if the model keeps calling
+            # task_status on the same still-running task, inject guidance
+            # instead of letting it spin (each poll is a full LLM round-trip).
+            if tool_name == "task_status":
+                task_id = self._poll_task_id(call)
+                if task_id:
+                    self._task_polls[task_id] = self._task_polls.get(task_id, 0) + 1
+                    if self._task_polls[task_id] > self._MAX_REPEATED_POLLS:
+                        result = (
+                            '{"success": true, "output": "Task is still running. '
+                            'Do NOT keep polling task_status. Use the await_task '
+                            'tool to wait for it asynchronously, or end this turn '
+                            'and I will notify you when the task completes."}'
+                        )
 
             # If approval is required, stop immediately - don't feed
             # anything back to the LLM. The turn ends and returns

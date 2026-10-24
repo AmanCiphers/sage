@@ -112,6 +112,7 @@ def build_supervisor(database, scripted=None, budget=None, registry=None) -> Sup
     provider = FakeInferenceProvider(
         scripted=scripted,
         capabilities=ModelCapabilities(tool_calling=True, streaming=True, reasoning=True),
+        context_window=131072,  # large so employee system prompt doesn't trigger compaction
     )
     model_registry = ModelRegistry()
     model_registry.register(provider)
@@ -261,13 +262,13 @@ async def test_employee_writes_to_its_own_workspace(database):
         ],
     )
 
-    task_id = await supervisor.assign("asta", "write notes.md")
+    task_id = await supervisor.assign("otto", "write notes.md")
     await asyncio.gather(*supervisor._background.values())
 
     task = await supervisor.get_status(task_id)
     assert task["status"] == "completed"
 
-    employee = supervisor._employees["asta"]
+    employee = supervisor._employees["otto"]
     assert (employee.workspace / "notes.md").read_text() == "hi"
     # And nothing leaked into SAGE's global workspace.
     assert not (settings.workspace_path / "notes.md").exists()
@@ -353,7 +354,7 @@ async def test_task_status_surfaces_progress_fields(database):
 
     supervisor._make_progress = _spy  # type: ignore[method-assign]
 
-    task_id = await supervisor.assign("asta", "write a.md")
+    task_id = await supervisor.assign("otto", "write a.md")
     await asyncio.gather(*supervisor._background.values())
 
     # Mid-run snapshot carried live progress.
@@ -452,7 +453,7 @@ async def test_side_effecting_task_reports_self_verified(database):
         ],
     )
 
-    task_id = await supervisor.assign("asta", "write out.md")
+    task_id = await supervisor.assign("otto", "write out.md")
     await asyncio.gather(*supervisor._background.values())
 
     task = await supervisor.get_status(task_id)

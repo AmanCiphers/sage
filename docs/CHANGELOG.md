@@ -283,6 +283,23 @@ Changes from the web-UI integration work that were **not** recorded in
 - **Files:** `app/agents/hermes.py`, `app/permissions/engine.py`, `.env`, `app/config.py`, `tests/unit/test_permission_engine.py`
 - **Why:** `run_hermes` was broken (invalid CLI flags) and SAGE kept prompting for approvals despite full-permission intent. Now Hermes works end-to-end, approvals only gate destructive actions, and SAGE won't run out of budget or hit the stale 60s timeout.
 
+## A21 — Investigation & web tools, await_task (anti-poll), per-role employee allowlists  *(2026-10-24)*
+
+- **Area:** Tools / Employees / Loop / Web
+- **Change:**
+  - **Investigation tools** (new `app/tools/investigation.py`, ripgrep-backed):
+    - `grep` — search file contents (regex/literal, `path`, `include` glob, case, limit, timeout).
+    - `glob` — find files by glob pattern (`**/*.ts`), hidden/limit.
+    - `web_search` — ranked results; uses **Tavily** if `SAGE_TAVILY_API_KEY` set, else free **Bing RSS** (no CAPTCHA).
+    - `browse_url` — fetch a page and return its text (HTML→text).
+  - **`await_task` tool + `Supervisor.await_task()`** — wait asynchronously for a task to finish (or timeout) instead of polling. **Anti-poll circuit-breaker** in `ConversationLoop`: after 2 repeated `task_status` calls on the same running task, injects guidance to use `await_task` / end turn.
+  - **`list_files`** upgraded: `recursive` + `limit`. **`read_file`** now prefixes 1-based line numbers.
+  - **Per-role employee tool allowlists** (enforced in `factory._filter_registry`): Charlie gets coding tools; Alpha/Asta research/survey tools; Otto write tools; Tony read/verify tools. No more uniform toolset.
+  - **Employees get `session_search` + a working `memory` tool** (per-employee `memory.md` resolved via context; was orphaned before).
+  - **Prompt quality**: role cards gained a "Tools you have" section; `tools.md` gained investigation heuristics + "don't poll task_status" rule; `authority.md` gained the employee roster + polling guidance.
+- **Files:** `app/tools/investigation.py` (new), `app/tools/builtin.py`, `app/tools/file_tools.py`, `app/tools/memory_tools.py`, `app/tools/session_search.py`, `app/employees/factory.py`, `app/employees/supervisor.py`, `app/conversation/loop.py`, `app/conversation/tools.md`, `app/conversation/authority.md`, `app/employees/roles/*.md`, `app/config.py`, `app/application.py`, `app/inference/fake.py`, tests
+- **Why:** SAGE had no grep/glob/web/browse tools (OpenCode had them all), employees were given a uniform toolset (not role-fit), and SAGE burned ~1177k tokens in a `task_status` poll runaway. These changes fix all three: investigation capability, role-fit tooling, and the poll loop.
+
 ---
 
 # Part B — Proposed: Employee Workers

@@ -11,7 +11,8 @@ def test_read_file_window(tmp_path):
 
     assert result["total_lines"] == 50
     assert result["offset"] == 10
-    assert result["lines"] == "line 10\nline 11\nline 12\nline 13\nline 14"
+    assert result["limit"] == 5
+    assert result["lines"] == "11: line 10\n12: line 11\n13: line 12\n14: line 13\n15: line 14"
 
 
 def test_read_file_missing(tmp_path):

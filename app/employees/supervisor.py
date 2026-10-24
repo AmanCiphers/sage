@@ -18,6 +18,7 @@ retried or reported as failed.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 
@@ -308,6 +309,41 @@ class Supervisor:
             round(time.time() - updated_at, 1) if updated_at else None
         )
         return task
+
+    async def await_task(
+        self,
+        task_id: str,
+        timeout_seconds: float = 60.0,
+        poll_interval: float = 1.0,
+    ) -> dict:
+        """Block (yield control) until a task reaches a terminal state or timeout.
+
+        This is the antidote to poll loops: it awaits the in-flight background
+        task (or polls the durable store) and returns the final status — the
+        LLM does not spin calling task_status repeatedly.
+        """
+        terminal = {"completed", "failed", "unknown", "cancelled"}
+        deadline = time.monotonic() + timeout_seconds
+
+        task = self._background.get(task_id)
+        if task is not None and not task.done():
+            # Await the in-flight asyncio task so we wake on real completion.
+            with contextlib.suppress(TimeoutError, asyncio.CancelledError):
+                await asyncio.wait_for(asyncio.shield(task), timeout=timeout_seconds)
+
+        # Poll the durable store briefly (covers recovery / already-finished).
+        while time.monotonic() < deadline:
+            status = await self.get_status(task_id)
+            if status is None:
+                return {"task_id": task_id, "status": "unknown", "error": "task not found"}
+            if status.get("status") in terminal:
+                return status
+            await asyncio.sleep(poll_interval)
+
+        final = await self.get_status(task_id)
+        if final is None:
+            return {"task_id": task_id, "status": "unknown", "error": "task not found"}
+        return final
 
     def roster_status(self) -> list[dict]:
         """Snapshot of the roster for the API/UI (Phase 6).

@@ -61,7 +61,11 @@ This document guides *when and why* to choose each tool.
 |-----------|----------------|
 | "What time is it?" | `get_current_time` (direct answer also fine) |
 | "Show me file X" | `read_file` |
-| "List directory X" | `list_files` |
+| "List directory X" | `list_files` (set recursive=true for the whole tree) |
+| "Find files matching a pattern" | `glob` (e.g. `**/*.ts`) |
+| "Find where symbol/code/text appears" | `grep` (regex or literal, narrow with path/include) |
+| "Read a large file" | `read_file` with offset/limit (line-numbered) |
+| "Search current info / the web" | `web_search` (+ `browse_url` to read a page) |
 | "Analyze/summarize paths X, Y, Z" | `analyze` (or `assign_task` if it should run in background) |
 | "Find where we discussed Y" | `session_search` (one query) |
 | "Create file Z" | `write_file` (inside workspace) |
@@ -72,14 +76,15 @@ This document guides *when and why* to choose each tool.
 | "Investigate X and report back" | `assign_task` to the best-matched employee |
 | "Remember this fact" | `memory` add |
 | "What did I say about X last month?" | `session_search` |
-| "Check on that long task" | `task_status` |
+| "Check on a background task" | `await_task` (wait once) — NOT repeated `task_status` polling |
 
 ## Anti-Patterns to Avoid
 
 - **Don't** `read_file` then `write_file` the whole thing — use `patch`.
 - **Don't** `run_command` with `cat file` — use `read_file`.
 - **Don't** `run_command` for directory listing — use `list_files`.
-- **Don't** `run_command` for multi-file analysis — use `analyze`.
+- **Don't** `run_command` for multi-file analysis — use `grep`/`analyze`.
+- **Don't** poll `task_status` in a loop while a task runs — use `await_task` once, or end the turn and rely on automatic completion notification.
 - **Don't** `assign_task` for quick ops (`ls`, `get_current_time`).
 - **Don't** chain multiple `run_command` when one compound command works.
 - **Don't** `session_search` repeatedly — one targeted query, refine only if needed.

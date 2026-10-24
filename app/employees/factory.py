@@ -52,17 +52,49 @@ def employee_root(key: str) -> Path:
     return Path(settings.database_path).parent / "employees" / key
 
 
-def _filter_registry(source: ToolRegistry) -> ToolRegistry:
-    """A registry containing only employee-eligible tools.
+# Per-role tool allowlists. Every employee starts with the employee-eligible
+# common set, then each role gets a tailored subset so it only sees the tools
+# relevant to its mandate (a coding employee shouldn't be handed the same
+# surface as a research employee).
+_COMMON_EMPLOYEE_TOOLS = {
+    "read_file",
+    "list_files",
+    "grep",
+    "glob",
+    "analyze",
+    "session_search",
+    "memory",
+    "run_hermes",
+    "web_search",
+    "browse_url",
+}
 
-    Tools are shared by reference (same handlers); the *set* is what
-    differs per employee. Per-employee tool allowlists can layer on top.
+_ROLE_ALLOWLIST: dict[str, set[str]] = {
+    "charlie": _COMMON_EMPLOYEE_TOOLS | {"run_opencode", "run_command", "write_file", "patch"},
+    "alpha": _COMMON_EMPLOYEE_TOOLS,
+    "asta": _COMMON_EMPLOYEE_TOOLS,
+    "otto": _COMMON_EMPLOYEE_TOOLS | {"write_file", "patch"},
+    "tony": _COMMON_EMPLOYEE_TOOLS | {"run_command"},
+}
+
+
+def _filter_registry(source: ToolRegistry, key: str | None = None) -> ToolRegistry:
+    """A registry containing only the tools allowed for an employee role.
+
+    Tools are shared by reference (same handlers); the *set* is what differs
+    per employee. If `key` is None or the role has no allowlist, fall back to
+    all employee-eligible tools.
     """
+
+    allowed = _ROLE_ALLOWLIST.get(key) if key else None
 
     filtered = ToolRegistry()
     for tool in source.list():
-        if getattr(tool, "employee_eligible", False):
-            filtered.register(tool)
+        if not getattr(tool, "employee_eligible", False):
+            continue
+        if allowed is not None and tool.name not in allowed:
+            continue
+        filtered.register(tool)
     return filtered
 
 
@@ -154,7 +186,7 @@ async def build_employee(
     session_state = SessionStateStore(database)
     memory_store = MemoryStore(root / "memory.md")
 
-    registry = _filter_registry(source_registry)
+    registry = _filter_registry(source_registry, spec.key)
     execution_engine = ExecutionEngine(registry)
     approval_manager = ApprovalManager(database)
 

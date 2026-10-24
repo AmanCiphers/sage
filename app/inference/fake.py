@@ -18,6 +18,7 @@ class FakeInferenceProvider(InferenceProvider):
         priority: int = 0,
         should_fail: bool = False,
         scripted: list[InferenceResponse] | None = None,
+        context_window: int = 4096,
     ) -> None:
         self._should_fail = should_fail
         self._scripted = list(scripted or [])
@@ -26,7 +27,7 @@ class FakeInferenceProvider(InferenceProvider):
         self._metadata = ModelMetadata(
             provider="fake",
             model_id=model_id,
-            context_window=4096,
+            context_window=context_window,
             capabilities=capabilities or ModelCapabilities(
                 tool_calling=True,
                 streaming=True,

@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     nebius_api_key: str | None = None
     nebius_base_url: str = "https://api.tokenfactory.nebius.com/v1"
 
+    tavily_api_key: str | None = None
+
     # Agent Backends (OpenCode, Hermes)
     opencode_path: str = "opencode"
     hermes_path: str = "hermes"

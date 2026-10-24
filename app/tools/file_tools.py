@@ -51,6 +51,8 @@ class ReadFileInput(ToolInput):
 
 class ListFilesInput(ToolInput):
     path: str = "."
+    recursive: bool = False
+    limit: int = 200
 
 
 class WriteFileInput(ToolInput):
@@ -79,37 +81,54 @@ def read_file(path: str, offset: int = 0, limit: int = 200) -> str:
         return json.dumps({"error": f"Cannot read {file_path}: {exc}"})
 
     window = lines[offset : offset + limit]
-    content = "\n".join(window)[:MAX_READ_CHARS]
+    # Prefix each line with its 1-based number: "N: content" so the model can
+    # reference exact lines and request the next slice precisely.
+    content = "\n".join(
+        f"{offset + i + 1}: {line}" for i, line in enumerate(window)
+    )[:MAX_READ_CHARS]
 
     return json.dumps(
         {
             "path": str(file_path),
             "total_lines": len(lines),
             "offset": offset,
+            "limit": limit,
             "lines": content,
         }
     )
 
 
-def list_files(path: str = ".") -> str:
+def list_files(path: str = ".", recursive: bool = False, limit: int = 200) -> str:
     directory = resolve_path(path)
 
     if not directory.is_dir():
         return json.dumps({"error": f"Not a directory: {directory}"})
 
+    limit = max(1, min(limit, 1000))
     try:
-        entries = sorted(
-            entry.name + ("/" if entry.is_dir() else "")
-            for entry in directory.iterdir()
-        )
+        if recursive:
+            entries = [
+                str(p.relative_to(directory)) + ("/" if p.is_dir() else "")
+                for p in sorted(directory.rglob("*"))
+            ]
+        else:
+            entries = sorted(
+                entry.name + ("/" if entry.is_dir() else "")
+                for entry in directory.iterdir()
+            )
     except OSError as exc:
         return json.dumps({"error": f"Cannot list {directory}: {exc}"})
+
+    truncated = len(entries) > limit
+    entries = entries[:limit]
 
     return json.dumps(
         {
             "path": str(directory),
-            "count": min(len(entries), MAX_LIST_ENTRIES),
-            "entries": entries[:MAX_LIST_ENTRIES],
+            "recursive": recursive,
+            "count": len(entries),
+            "truncated": truncated,
+            "entries": entries,
         }
     )
 
@@ -205,8 +224,10 @@ def register_file_tools(registry) -> None:
             name="read_file",
             description=(
                 "Read a text file. Relative paths resolve under the SAGE "
-                "workspace directory. Returns lines from offset, up to "
-                "limit lines (default 200)."
+                "workspace. Each line is prefixed with its 1-based number. "
+                "Use offset and limit to read large files in sections. "
+                "Prefer one larger read over many small slices; use grep to "
+                "find specific content in large files."
             ),
             classification=ToolClassification.READ_ONLY,
             input_schema=ReadFileInput,
@@ -220,8 +241,9 @@ def register_file_tools(registry) -> None:
         ToolDefinition(
             name="list_files",
             description=(
-                "List files and directories at a path. Relative paths "
-                "resolve under the SAGE workspace directory."
+                "List files and directories at a path. Relative paths resolve "
+                "under the SAGE workspace. Set recursive=true to list the "
+                "entire tree; limit bounds the number of entries."
             ),
             classification=ToolClassification.READ_ONLY,
             input_schema=ListFilesInput,

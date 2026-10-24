@@ -33,7 +33,7 @@ def register_session_search(registry, message_store: MessageStore) -> None:
             classification=ToolClassification.READ_ONLY,
             input_schema=SessionSearchInput,
             destructive=False,
-            employee_eligible=False,
+            employee_eligible=True,
             handler=session_search,
         )
     )

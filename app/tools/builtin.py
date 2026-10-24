@@ -40,6 +40,11 @@ class TaskStatusInput(ToolInput):
     task_id: str
 
 
+class AwaitTaskInput(ToolInput):
+    task_id: str
+    timeout_seconds: float = 60.0
+
+
 class ScheduleJobInput(ToolInput):
     name: str
     cron_expression: str
@@ -507,6 +512,29 @@ def register_builtin_tools(registry, supervisor=None) -> None:
             destructive=False,
             employee_eligible=False,
             handler=task_status,
+        )
+    )
+
+    async def await_task(task_id: str, timeout_seconds: float = 60.0) -> dict:
+        """Wait (yielding control) for an assigned task to finish or time out."""
+        status = await supervisor.await_task(task_id, timeout_seconds=timeout_seconds)
+        if status is None:
+            return {"error": f"Unknown task: {task_id}"}
+        return status
+
+    registry.register(
+        ToolDefinition(
+            name="await_task",
+            description=(
+                "Wait (asynchronously, without polling) for a task assigned "
+                "with assign_task to finish or time out. Returns the final "
+                "status. Use this instead of repeatedly calling task_status."
+            ),
+            classification=ToolClassification.READ_ONLY,
+            input_schema=AwaitTaskInput,
+            destructive=False,
+            employee_eligible=False,
+            handler=await_task,
         )
     )
 

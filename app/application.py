@@ -31,6 +31,7 @@ from app.scheduler.proactive import ProactiveEngine
 from app.scheduler.store import SchedulerStore
 from app.tools.builtin import register_builtin_tools
 from app.tools.file_tools import register_file_tools
+from app.tools.investigation import register_investigation_tools
 from app.tools.memory_tools import register_memory_tools
 from app.tools.registry import ToolRegistry
 from app.tools.session_search import register_session_search
@@ -147,6 +148,7 @@ class SAGEApplication:
         register_shell_tools(self.tool_registry)
         register_memory_tools(self.tool_registry, self.memory_store)
         register_session_search(self.tool_registry, self.message_store)
+        register_investigation_tools(self.tool_registry)
 
         # Scheduler & Proactive
         self.scheduler_store = SchedulerStore(self.database)
