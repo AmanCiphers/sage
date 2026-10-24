@@ -1,5 +1,17 @@
 from app.permissions import PermissionDecision, PermissionEngine
+from app.permissions.config import reset_permission_config, set_yolo_mode
 from app.tools.models import ToolClassification, ToolDefinition
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _no_yolo():
+    """Force non-YOLO (interactive) mode for these tests so they assert the
+    default policy. `.env` may enable SAGE_YOLO_MODE=1 globally; reset it."""
+    set_yolo_mode(False)
+    yield
+    reset_permission_config()
 
 
 def dummy_handler():

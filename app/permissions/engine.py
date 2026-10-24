@@ -150,9 +150,12 @@ class PermissionEngine:
         """Check for bypass conditions."""
         config = get_permission_config()
 
-        # Global YOLO
+        # Global YOLO: allow everything EXCEPT genuinely destructive tools,
+        # which still require explicit approval (danger detection below).
         if config.yolo_active:
-            return PermissionResult(decision=PermissionDecision.ALLOWED)
+            if not request.destructive:
+                return PermissionResult(decision=PermissionDecision.ALLOWED)
+            return PermissionResult(decision=PermissionDecision.APPROVAL_REQUIRED)
 
         # Off mode
         if config.is_off_mode:

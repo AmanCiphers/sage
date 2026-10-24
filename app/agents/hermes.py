@@ -50,25 +50,27 @@ class HermesBackend(AgentBackend):
         session_id: str | None = None,
         continue_last: bool = False,
     ) -> tuple[str, str | None]:
-        """Run hermes command and return (output, session_id)."""
-        # Hermes uses `hermes chat` for interactive/one-shot
-        cmd = [self.hermes_path, "chat"]
+        """Run hermes command and return (output, session_id).
 
+        Hermes v0.20.x: one-shot prompts use the top-level `-z PROMPT` flag
+        (NOT `hermes chat ... --format stream-json`, which does not exist).
+        `--pass-session-id` makes the session id available on stdout so we
+        can resume across assignments.
+        """
+        cmd = [self.hermes_path, "-z", prompt]
+
+        # Only override the model if the caller explicitly asked for one;
+        # otherwise let Hermes use its own configured default (e.g. NVIDIA NIM).
         if model:
-            cmd.extend(["--provider", "openrouter", "--model", model])
-        else:
-            cmd.extend(["--provider", "openrouter", "--model", self.default_model])
-
-        # Quiet mode for programmatic use
-        cmd.extend(["-Q", "--format", "stream-json"])
+            cmd.extend(["--model", model])
 
         if continue_last:
-            cmd.extend(["-c"])
+            cmd.append("--continue")
         elif session_id:
-            cmd.extend(["-r", session_id])
+            cmd.extend(["--resume", session_id])
 
         cmd.extend(["--in", str(self.workspace)])
-        cmd.append(prompt)
+        cmd.append("--pass-session-id")
 
         logger.debug("Running Hermes: %s", " ".join(cmd))
 
@@ -92,18 +94,30 @@ class HermesBackend(AgentBackend):
         return output, session_id
 
     def _extract_session_id(self, output: str) -> str | None:
-        """Extract Hermes session ID from JSONL output."""
-        # Hermes stream-json outputs JSONL, look for session_id in metadata
+        """Extract Hermes session ID from --pass-session-id output."""
+        # Hermes prints a trailing line like:  Session ID: <id>  (or a
+        # `session_id=<id>` fragment) when --pass-session-id is set.
         for line in output.splitlines():
             line = line.strip()
             if not line:
                 continue
+            low = line.lower()
+            for marker in ("session id:", "session_id:", "session_id=", "session id="):
+                if marker in low:
+                    # Take the value after the marker, trimmed of quotes/spaces
+                    value = line.split(":", 1)[-1] if ":" in line else line.split("=", 1)[-1]
+                    value = value.strip().strip('"').strip("'")
+                    if value and not value.lower().startswith(("session", "resume")):
+                        return value
+            # JSONL fallback (in case a config emits metadata JSON)
             try:
                 data = json.loads(line)
-                if "session_id" in data:
-                    return data["session_id"]
-                if "meta" in data and "session_id" in data["meta"]:
-                    return data["meta"]["session_id"]
+                if isinstance(data, dict):
+                    if data.get("session_id"):
+                        return str(data["session_id"])
+                    meta = data.get("meta") or data.get("session") or {}
+                    if isinstance(meta, dict) and meta.get("session_id"):
+                        return str(meta["session_id"])
             except json.JSONDecodeError:
                 continue
         return None
@@ -131,8 +145,8 @@ class HermesBackend(AgentBackend):
         duration = time.monotonic() - start
         success = self._process is not None and self._process.returncode == 0
 
-        # Parse JSONL output for final result
-        parsed_output = self._parse_jsonl_output(output)
+        # Clean output: drop the trailing session-id marker line if present.
+        parsed_output = self._strip_session_line(output)
 
         return AgentResult(
             success=success,
@@ -141,6 +155,15 @@ class HermesBackend(AgentBackend):
             duration_seconds=duration,
             session_id=self._current_session_id,
         )
+
+    def _strip_session_line(self, output: str) -> str:
+        """Remove Hermes' trailing 'Session ID: ...' marker from the reply."""
+        lines = [ln for ln in output.splitlines() if ln.strip()]
+        if lines:
+            low = lines[-1].lower()
+            if any(m in low for m in ("session id:", "session_id:", "session_id=")):
+                lines.pop()
+        return "\n".join(lines).strip()
 
     def _build_prompt(self, task: AgentTask) -> str:
         """Build the prompt for Hermes with context."""
@@ -156,24 +179,6 @@ class HermesBackend(AgentBackend):
 
         parts.append("\n\nWork in the current directory.")
         return "".join(parts)
-
-    def _parse_jsonl_output(self, output: str) -> str:
-        """Parse Hermes stream-json output, extracting assistant messages."""
-        messages = []
-        for line in output.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                data = json.loads(line)
-                # Hermes stream-json format varies; look for content
-                if "content" in data and data.get("role") == "assistant":
-                    messages.append(data["content"])
-                elif "text" in data:
-                    messages.append(data["text"])
-            except json.JSONDecodeError:
-                continue
-        return "\n".join(messages) if messages else output.strip()
 
     async def cancel(self) -> None:
         """Cancel running Hermes process."""

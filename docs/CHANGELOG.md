@@ -272,6 +272,17 @@ Changes from the web-UI integration work that were **not** recorded in
 - **Files:** `app/permissions/config.py`, `main.py`, `app/tools/file_tools.py`, `tests/unit/test_employees.py`
 - **Why:** "Full permission" was not actually honored — SAGE kept prompting for approvals. And `data/employees/...` paths resolved under `data/workspace` (not found) instead of the project root. Both fixed.
 
+## A20 — Hermes wrapper fix + YOLO-by-default + unlimited SAGE budget  *(2026-10-24)*
+
+- **Area:** Agents / Permissions / Config
+- **Change:**
+  - **Hermes wrapper fixed** (`app/agents/hermes.py`): the old command used `hermes chat --format stream-json`, which doesn't exist in Hermes v0.20.x and failed instantly. Now uses the top-level one-shot form `hermes -z <prompt> --in <dir> --pass-session-id`, letting Hermes use its own configured model/provider (NVIDIA NIM) instead of hardcoded `--provider openrouter --model openai/gpt-4`.
+  - **YOLO-by-default but destructive still gated**: `.env` now sets `SAGE_YOLO_MODE=1`. `PermissionEngine._check_bypass()` was updated so YOLO allows everything **except** genuinely destructive tools (still `APPROVAL_REQUIRED`). The `run_command` dynamic `requires_approval` hook still gates non-read-only commands.
+  - **Unlimited SAGE budget**: SAGE's own loop `max_iterations` raised `8 → 50` (per-turn tool rounds). Employee budgets were already unlimited (all `0`).
+  - **Timeout fix stuck**: `.env` had `SAGE_MODEL_REQUEST_TIMEOUT=60`, silently overriding the earlier `180s` default and re-breaking gpt-oss-20b. Updated `.env` to `180`.
+- **Files:** `app/agents/hermes.py`, `app/permissions/engine.py`, `.env`, `app/config.py`, `tests/unit/test_permission_engine.py`
+- **Why:** `run_hermes` was broken (invalid CLI flags) and SAGE kept prompting for approvals despite full-permission intent. Now Hermes works end-to-end, approvals only gate destructive actions, and SAGE won't run out of budget or hit the stale 60s timeout.
+
 ---
 
 # Part B — Proposed: Employee Workers

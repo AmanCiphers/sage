@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     model_request_timeout: float = 180.0
 
     # Agentic loop.
-    max_iterations: int = 8
+    max_iterations: int = 50
     max_tool_result_chars: int = 8000
 
     # Employee assignment budgets (0/None = unlimited). Iterations and
