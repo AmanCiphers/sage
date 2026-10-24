@@ -42,6 +42,14 @@ class Settings(BaseSettings):
 
     tavily_api_key: str | None = None
 
+    # Default timezone for cron/scheduled jobs (IANA name, e.g. "Asia/Kolkata").
+    timezone: str = "Asia/Kolkata"
+
+    # Scheduler loop check interval (seconds). Lower = more precise one-time
+    # reminders; higher = less CPU. Cron jobs are minute-granular anyway, but
+    # `run_at` reminders can be sub-minute.
+    scheduler_check_interval: int = 5
+
     # Agent Backends (OpenCode, Hermes)
     opencode_path: str = "opencode"
     hermes_path: str = "hermes"

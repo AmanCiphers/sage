@@ -317,6 +317,17 @@ Changes from the web-UI integration work that were **not** recorded in
 - **Files:** `app/tools/investigation.py`, `tests/unit/test_investigation_and_polling.py`
 - **Why:** `web_search`/`browse_url` worked because they use sync stdlib HTTP, but the ripgrep subprocess helpers tried to spin their own loop. Making them async aligns with the `ExecutionEngine` (which awaits async handlers) and fixes the crash.
 
+## A24 — Timezone-aware scheduler + one-time `run_at` reminders  *(2026-10-24)*
+
+- **Area:** Scheduler / Cron / Proactive
+- **Change:**
+  - **Timezone fix**: `SchedulerEngine` was computing cron next-runs with `datetime.utcnow()` and ignoring each job's `timezone` field, so an IST cron fired 5.5h early. Now cron expressions are evaluated in the job's IANA timezone (`zoneinfo`) and stored as UTC. Added helpers `_tz_for`, `_now_utc`, `_iso_utc`, `_next_run`.
+  - **`run_at` support**: `schedule_job` now accepts an absolute ISO `run_at` datetime for one-time sub-minute reminders (cron can't express seconds). `max_runs` defaults to 1 for `run_at` jobs.
+  - **Configurable timezone + check interval**: added `SAGE_TIMEZONE` (default `Asia/Kolkata`) and `SAGE_SCHEDULER_CHECK_INTERVAL` (default 5s) so reminders fire promptly.
+  - `schedule_job` input now has `timezone` and `run_at`; description documents both.
+- **Files:** `app/scheduler/engine.py`, `app/scheduler/models.py`, `app/tools/builtin.py`, `app/application.py`, `app/config.py`, `tests/unit/test_scheduler_timezone.py` (new)
+- **Why:** The user's luggage reminder would have fired at 14:30 IST instead of 09:00, and a "10 seconds from now" test couldn't be expressed in cron. Timezone-aware cron + `run_at` fixes both.
+
 ---
 
 # Part B — Proposed: Employee Workers

@@ -47,10 +47,12 @@ class AwaitTaskInput(ToolInput):
 
 class ScheduleJobInput(ToolInput):
     name: str
-    cron_expression: str
+    cron_expression: str | None = None
     event_type: str
     payload_template: dict[str, Any] = Field(default_factory=dict)
     max_runs: int | None = None
+    timezone: str | None = None
+    run_at: str | None = None
 
 
 class ListJobsInput(ToolInput):
@@ -543,8 +545,14 @@ def register_builtin_tools(registry, supervisor=None) -> None:
         ToolDefinition(
             name="schedule_job",
             description=(
-                "Create a recurring scheduled job that publishes an event on a cron schedule. "
-                "Use standard cron expressions (e.g., '0 * * * *' for hourly)."
+                "Create a scheduled job that publishes an event. Provide "
+                "`cron_expression` for recurring jobs (e.g. '0 9 * * *' = "
+                "daily 09:00) OR `run_at` for a one-time job at an absolute "
+                "ISO datetime (e.g. '2026-10-25T09:00:00+05:30', or a UTC "
+                "string with a Z). `run_at` supports sub-minute precision. "
+                "The cron expression is interpreted in `timezone` (IANA name, "
+                "e.g. 'Asia/Kolkata'); if omitted, the configured default SAGE "
+                "timezone is used (IST)."
             ),
             classification=ToolClassification.READ_ONLY,  # Metadata only
             input_schema=ScheduleJobInput,

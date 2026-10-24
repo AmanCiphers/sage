@@ -155,6 +155,7 @@ class SAGEApplication:
         self.scheduler = SchedulerEngine(
             store=self.scheduler_store,
             event_bus=self.event_bus,
+            check_interval_seconds=settings.scheduler_check_interval,
         )
         self.proactive = ProactiveEngine(
             store=self.scheduler_store,
@@ -212,7 +213,9 @@ class SAGEApplication:
 
         # Scheduler tools need scheduler
         scheduler_tools = {
-            "schedule_job": lambda **kw: self.scheduler.add_job(**kw),
+            "schedule_job": lambda **kw: self.scheduler.add_job(
+                timezone=kw.pop("timezone", None) or settings.timezone, **kw
+            ),
             "list_jobs": lambda enabled_only=False: self._list_jobs_json(enabled_only),
             "enable_job": lambda job_id, enabled=True: self._enable_job_json(job_id, enabled),
             "remove_job": lambda job_id: self._remove_job_json(job_id),

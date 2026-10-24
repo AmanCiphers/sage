@@ -716,3 +716,12 @@ roster/activity panel (Phase 9, API already exposed at `/api/workers*`).
 **Decision:** Added `AGENTS.md` at the repo root instructing every agent working on this repository to update `docs/CHANGELOG.md` (and `docs/DECISIONS.md` for architectural decisions) as part of completing any change.
 
 **Why:** The repo depends on accurate, current docs (DECISIONS/HOW_IT_WORKS/ArchitectureV2). Several docs went stale (e.g. D14's "no embeddings", §31–33 unimplemented memory features). A persistent instruction ensures each agent records what it changed.
+
+### D41 — Timezone-aware cron + one-time `run_at` scheduling
+
+**Decision:**
+- `SchedulerEngine` now evaluates cron expressions in each job's IANA timezone (`zoneinfo`), storing next-run as UTC. A job's `timezone` field is honored; `SAGE_TIMEZONE` (default `Asia/Kolkata`) is the default when omitted.
+- Added `run_at` (absolute ISO datetime) to `schedule_job` for one-time, sub-minute reminders that cron cannot express. Such jobs default to `max_runs=1`.
+- Scheduler loop check interval is configurable (`SAGE_SCHEDULER_CHECK_INTERVAL`, default 5s) so `run_at` reminders fire promptly.
+
+**Why:** The scheduler silently used UTC while the user expects IST, so cron reminders fired 5.5h early (a 09:00 IST luggage reminder fired at 14:30 IST). Also, cron can't schedule "10 seconds from now". Timezone-aware cron + `run_at` fixes both correctness and precision.

@@ -1,8 +1,9 @@
 """Scheduler engine for cron-like job execution."""
 
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import croniter
 
@@ -13,6 +14,40 @@ from app.scheduler.models import ScheduledJob
 from app.scheduler.store import SchedulerStore
 
 logger = get_logger(__name__)
+
+DEFAULT_TIMEZONE = "UTC"
+
+
+def _tz_for(name: str) -> timezone | ZoneInfo:
+    """Return a tzinfo for a zone name, defaulting to UTC on failure."""
+    if not name or name.upper() == "UTC":
+        return UTC
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        logger.warning("unknown_timezone_falling_back_to_utc", tz=name)
+        return UTC
+
+
+def _now_utc() -> datetime:
+    """Current time as a timezone-aware UTC datetime."""
+    return datetime.now(UTC)
+
+
+def _iso_utc(dt: datetime) -> str:
+    """Format a timezone-aware datetime as UTC ISO-8601 with Z."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _next_run(expr: str, tz_name: str) -> datetime:
+    """Compute the next cron run in the job's timezone, returned as UTC-aware."""
+    tz = _tz_for(tz_name)
+    base = datetime.now(tz)
+    cron = croniter.croniter(expr, base)
+    nxt = cron.get_next(datetime)
+    return nxt.astimezone(UTC)
 
 
 class SchedulerEngine:
@@ -58,7 +93,7 @@ class SchedulerEngine:
             await asyncio.sleep(self.check_interval)
 
     async def _check_and_trigger(self) -> None:
-        now = datetime.utcnow().isoformat() + "Z"
+        now = _iso_utc(_now_utc())
         due_jobs = await self.store.get_due_jobs(now)
 
         for job in due_jobs:
@@ -87,11 +122,9 @@ class SchedulerEngine:
         job.last_run_at = now
         job.run_count += 1
 
-        # Calculate next run
+        # Calculate next run in the job's timezone (stored as UTC).
         try:
-            cron = croniter.croniter(job.cron_expression, datetime.utcnow())
-            next_run = cron.get_next(datetime)
-            job.next_run_at = next_run.isoformat() + "Z"
+            job.next_run_at = _iso_utc(_next_run(job.cron_expression, job.timezone))
         except Exception as exc:
             logger.warning("cron_parse_failed", job_id=job.job_id, error=str(exc))
             job.enabled = False
@@ -122,27 +155,51 @@ class SchedulerEngine:
     async def add_job(
         self,
         name: str,
-        cron_expression: str,
-        event_type: str,
+        cron_expression: str | None = None,
+        event_type: str = "",
         payload_template: dict[str, Any] | None = None,
         max_runs: int | None = None,
-        timezone: str = "UTC",
+        timezone: str | None = None,
+        run_at: str | None = None,
     ) -> str:
-        """Create and schedule a new job."""
-        # Validate cron expression
-        try:
-            cron = croniter.croniter(cron_expression, datetime.utcnow())
-            next_run = cron.get_next(datetime)
-        except Exception as exc:
-            raise ValueError(f"Invalid cron expression: {exc}")  # noqa: B904
+        """Create and schedule a new job.
+
+        Either `cron_expression` (recurring) or `run_at` (one-time, an
+        absolute ISO datetime) must be provided. `run_at` allows sub-minute
+        precision that cron cannot express.
+        """
+        if not timezone:
+            from app.config import settings
+
+            timezone = settings.timezone
+
+        if run_at:
+            # One-time absolute datetime. Parse it as timezone-aware; if naive,
+            # assume the job's timezone.
+            try:
+                dt = datetime.fromisoformat(run_at.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=_tz_for(timezone))
+                next_run_utc = dt.astimezone(timezone.utc)
+                cron_expr = run_at  # stored for reference / list display
+            except Exception as exc:
+                raise ValueError(f"Invalid run_at datetime: {exc}")  # noqa: B904
+        else:
+            if not cron_expression:
+                raise ValueError("Either cron_expression or run_at is required")
+            try:
+                next_run_utc = _next_run(cron_expression, timezone)
+            except Exception as exc:
+                raise ValueError(f"Invalid cron expression: {exc}")  # noqa: B904
+            cron_expr = cron_expression
 
         job = ScheduledJob(
             name=name,
-            cron_expression=cron_expression,
+            cron_expression=cron_expr,
             event_type=event_type,
             payload_template=payload_template or {},
-            next_run_at=next_run.isoformat() + "Z",
-            max_runs=max_runs,
+            next_run_at=_iso_utc(next_run_utc),
+            max_runs=max_runs if max_runs is not None else (1 if run_at else None),
             timezone=timezone,
         )
 
@@ -159,11 +216,9 @@ class SchedulerEngine:
             return False
         job.enabled = enabled
         if enabled and not job.next_run_at:
-            # Recalculate next run
+            # Recalculate next run in the job's timezone.
             try:
-                cron = croniter.croniter(job.cron_expression, datetime.utcnow())
-                next_run = cron.get_next(datetime)
-                job.next_run_at = next_run.isoformat() + "Z"
+                job.next_run_at = _iso_utc(_next_run(job.cron_expression, job.timezone))
             except Exception:
                 return False
         await self.store.update_job(job)
