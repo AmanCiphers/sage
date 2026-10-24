@@ -218,20 +218,32 @@ async def main() -> None:
 
     try:
         while True:
+            # Wait for user input with a short timeout, so we can drain
+            # background notices (employee completions, reminders) while the
+            # user is idle rather than only after they type something.
+            try:
+                user_input = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        input,
+                        renderer.style.bold(renderer.style.cyan("You: ")),
+                    ),
+                    timeout=1.0,
+                )
+            except TimeoutError:
+                # No input this cycle — surface any pending notices, then keep
+                # waiting for input.
+                for notice in app.completion_notifier.drain():
+                    renderer.note(f"\n[SAGE] {notice}")
+                continue
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+
             # Safe boundary: SAGE is idle here (no response streaming), so
             # any employee-completion notices can be shown without cutting
             # into a reply.
             for notice in app.completion_notifier.drain():
                 renderer.note(f"\n[SAGE] {notice}")
-
-            try:
-                user_input = await asyncio.to_thread(
-                    input,
-                    renderer.style.bold(renderer.style.cyan("You: ")),
-                )
-            except (EOFError, KeyboardInterrupt):
-                print()
-                break
 
             user_input = _ANSI_RE.sub("", user_input).strip()
             if not user_input:

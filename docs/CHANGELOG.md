@@ -328,6 +328,15 @@ Changes from the web-UI integration work that were **not** recorded in
 - **Files:** `app/scheduler/engine.py`, `app/scheduler/models.py`, `app/tools/builtin.py`, `app/application.py`, `app/config.py`, `tests/unit/test_scheduler_timezone.py` (new)
 - **Why:** The user's luggage reminder would have fired at 14:30 IST instead of 09:00, and a "10 seconds from now" test couldn't be expressed in cron. Timezone-aware cron + `run_at` fixes both.
 
+## A25 — Surface scheduled reminders to the user  *(2026-10-24)*
+
+- **Area:** Scheduler / Notifications / CLI
+- **Change:**
+  - `CompletionNotifier` now also captures **scheduled reminder events** (`reminder` custom type + `scheduled_job_completed`/`scheduled_job_triggered`) and enqueues a user-facing line (`⏰ <name>: <message>`). Dedupes by `job_id` so a single trigger doesn't double-notify.
+  - **CLI now polls for input with a 1s timeout** (`asyncio.wait_for`), draining pending notices (completions + reminders) on each idle cycle. Previously `input()` blocked, so a reminder only surfaced after the user typed something.
+- **Files:** `app/notifications/completion.py`, `main.py`
+- **Why:** The scheduler correctly fired and persisted the reminder event, but nothing surfaced it to the user — the notifier only watched employee-finished events, and the CLI blocked on `input()`. Reminders now appear live while the user is idle.
+
 ---
 
 # Part B — Proposed: Employee Workers
