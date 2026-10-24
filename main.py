@@ -65,6 +65,8 @@ async def main() -> None:
                         "  /memory          show raw long-term memory",
                         "  /profile         show structured profile",
                         "  /search <query>  search conversation history",
+                        "  /yolo            allow all actions without approval (full permission)",
+                        "  /approvals       require approval again (exit full-permission mode)",
                         "  /exit            quit",
                     ]
                 )
@@ -127,11 +129,20 @@ async def main() -> None:
                         f"{content}"
                     )
 
-        elif command == "/yolo":
-            # Toggle YOLO mode
-            config = app.permission_engine.config
-            print(renderer.style.dim(f"YOLO mode: {config.yolo_mode}"))
-            print(renderer.style.dim("Use SAGE_YOLO_MODE=1 env var to enable"))
+        elif command in {"/yolo", "/approvals"}:
+            # /yolo = full permission (no approvals); /approvals = back to interactive
+            from app.permissions.config import set_yolo_mode
+
+            if command == "/yolo":
+                set_yolo_mode(True)
+                print(renderer.style.green(
+                    "Full permission ON — all actions will run without approval. "
+                    "Use /approvals to re-enable approval prompts."
+                ))
+            else:
+                set_yolo_mode(False)
+                print(renderer.style.dim("Approval prompts re-enabled."))
+            return None
 
         elif command == "/allowlist":
             parts = argument.strip().split()

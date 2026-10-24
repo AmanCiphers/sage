@@ -85,7 +85,9 @@ def register_shell_tools(registry) -> None:
                 "Run a shell command in the SAGE workspace directory. "
                 "Read-only commands (ls, cat, grep, git status, ...) run "
                 "immediately; anything that can change state requires user "
-                "approval. Results include exit_code, stdout, stderr."
+                "approval. Results include exit_code, stdout, stderr. "
+                "NOT FOR CODING TASKS — do not use for npm, git, build, or scaffolding. "
+                "Use run_opencode for all coding-related commands."
             ),
             classification=ToolClassification.LOCAL_MUTATION,
             input_schema=RunCommandInput,

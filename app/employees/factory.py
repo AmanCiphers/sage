@@ -158,8 +158,9 @@ async def build_employee(
     execution_engine = ExecutionEngine(registry)
     approval_manager = ApprovalManager(database)
 
+    # Employees need a model with reasoning to follow complex instructions
     router = ModelRouter(model_registry)
-    primary = router.route(ModelRequirements(tool_calling=True))
+    primary = router.route(ModelRequirements(tool_calling=True, reasoning=True))
     compressor = ContextCompressor(
         inference_manager=inference_manager,
         session_state=session_state,
@@ -201,6 +202,8 @@ async def build_employee(
             else _LOOP_HARD_CEILING
         ),
         max_tool_result_chars=settings.max_tool_result_chars,
+        # Employees need reasoning to follow complex instructions (use run_opencode, etc.)
+        model_requirements=ModelRequirements(tool_calling=True, reasoning=True),
     )
 
     # Keep a handle so the supervisor can close the DB later.

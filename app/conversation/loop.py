@@ -65,6 +65,7 @@ class ConversationLoop:
         compressor: ContextCompressor,
         max_iterations: int = 8,
         max_tool_result_chars: int = 8000,
+        model_requirements: ModelRequirements | None = None,
     ) -> None:
         self.inference_manager = inference_manager
         self.tool_registry = tool_registry
@@ -76,6 +77,7 @@ class ConversationLoop:
         self.compressor = compressor
         self.max_iterations = max_iterations
         self.max_tool_result_chars = max_tool_result_chars
+        self.model_requirements = model_requirements or ModelRequirements(tool_calling=True)
         self.logger = get_logger(__name__)
 
         # UI hook: notified of turn activity (LLM calls, tool rounds).
@@ -139,7 +141,7 @@ class ConversationLoop:
                         messages=history,
                         tools=self.tool_registry.openai_definitions(),
                     ),
-                    requirements=ModelRequirements(tool_calling=True),
+                    requirements=self.model_requirements,
                     on_delta=on_delta,
                 )
             else:
@@ -148,7 +150,7 @@ class ConversationLoop:
                         messages=history,
                         tools=self.tool_registry.openai_definitions(),
                     ),
-                    requirements=ModelRequirements(tool_calling=True),
+                    requirements=self.model_requirements,
                 )
 
             # Accumulate usage from this LLM call.

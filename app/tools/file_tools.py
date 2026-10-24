@@ -18,6 +18,10 @@ def resolve_path(path: str) -> Path:
     resolve under a configured workspace root. The root is the global SAGE
     workspace except during an employee turn, when it is the employee's own
     workspace (see app/tools/workspace.py).
+
+    Paths that don't exist under the workspace but do exist under the
+    project root (e.g. `data/employees/...`) resolve from there, so SAGE
+    can inspect its own data/employee stores without needing absolute paths.
     """
 
     from app.tools.workspace import current_workspace
@@ -25,7 +29,18 @@ def resolve_path(path: str) -> Path:
     expanded = Path(path).expanduser()
     if expanded.is_absolute():
         return expanded.resolve()
-    return (current_workspace() / expanded).resolve()
+
+    workspace_candidate = (current_workspace() / expanded).resolve()
+    if workspace_candidate.exists():
+        return workspace_candidate
+
+    from pathlib import Path as _Path
+    project_root = _Path(__file__).resolve().parents[2]
+    project_candidate = (project_root / expanded).resolve()
+    if project_candidate.exists():
+        return project_candidate
+
+    return workspace_candidate
 
 
 class ReadFileInput(ToolInput):

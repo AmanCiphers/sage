@@ -93,3 +93,14 @@ def reset_permission_config() -> None:
     """Reset config (for testing)."""
     global _permission_config
     _permission_config = None
+
+
+def set_yolo_mode(enabled: bool) -> bool:
+    """Enable/disable global YOLO bypass at runtime (thread-safe).
+
+    Returns the new YOLO state. When enabled, the PermissionEngine allows
+    all tool calls without approval — the user's "full permission" toggle.
+    """
+    config = get_permission_config()
+    config.yolo_mode = enabled
+    return config.yolo_active

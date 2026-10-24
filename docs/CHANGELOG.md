@@ -251,6 +251,27 @@ Changes from the web-UI integration work that were **not** recorded in
 - **Files:** `app/employees/factory.py`, `app/employees/employee.py`, `app/tools/builtin.py`, `app/persistence/store.py`
 - **Why:** No visibility into what employees were actually doing. "Completed" status with empty result was misleading. Per-employee logs + tool usage logs make debugging and verification straightforward.
 
+## A18 — Employee actually uses OpenCode (reasoning model + timeout)  *(2026-10-24)*
+
+- **Area:** Employees / Inference
+- **Change:**
+  - Employees now route to a **reasoning-capable model** (`openai/gpt-oss-20b`) instead of DeepSeek-V4-Flash, so they follow complex system-prompt instructions (e.g. "call run_opencode") rather than defaulting to `run_command`.
+  - `ConversationLoop` accepts a `model_requirements` param; employee factory passes `ModelRequirements(tool_calling=True, reasoning=True)`.
+  - Provider timeout raised `60s → 180s` (reasoning model is slower); this also fixed the intermittent gpt-oss-20b timeouts.
+  - Rewrote `run_opencode`/`run_hermes`/`run_command` tool descriptions to be explicit about when each is mandatory, and that `run_command`/`write_file`/`patch` are NOT for coding.
+- **Files:** `app/employees/factory.py`, `app/conversation/loop.py`, `app/config.py`, `app/tools/builtin.py`, `app/tools/shell_tools.py`, `app/employees/roles/charlie.md`
+- **Why:** Employees returned hollow "completed" because the fast model ignored the run_opencode instruction. Verified live: Charlie called `run_opencode`, produced a real Next.js counter app, and the production build passed.
+
+## A19 — Runtime full-permission toggle (/yolo) + project-root path resolution  *(2026-10-24)*
+
+- **Area:** Permissions / Tooling / CLI
+- **Change:**
+  - Added runtime `set_yolo_mode()` in `app/permissions/config.py`; CLI `/yolo` enables full permission (no approvals), `/approvals` re-enables them.
+  - `resolve_path()` in `app/tools/file_tools.py` now falls back to the project root for relative paths (e.g. `data/employees/...`) that don't exist under the workspace, so SAGE can inspect employee stores without absolute paths.
+  - Fixed approval-expiry error that occurred when a slow `run_opencode` created an approval that expired before subsequent verification commands were approved.
+- **Files:** `app/permissions/config.py`, `main.py`, `app/tools/file_tools.py`, `tests/unit/test_employees.py`
+- **Why:** "Full permission" was not actually honored — SAGE kept prompting for approvals. And `data/employees/...` paths resolved under `data/workspace` (not found) instead of the project root. Both fixed.
+
 ---
 
 # Part B — Proposed: Employee Workers

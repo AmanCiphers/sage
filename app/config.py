@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     min_workers: int = 10
     max_workers: int = 20
 
-    model_request_timeout: float = 60.0
+    model_request_timeout: float = 180.0
 
     # Agentic loop.
     max_iterations: int = 8

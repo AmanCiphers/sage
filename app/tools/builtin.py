@@ -389,10 +389,15 @@ def register_builtin_tools(registry, supervisor=None) -> None:
         ToolDefinition(
             name="run_opencode",
             description=(
-                "Run OpenCode to execute a coding task in the current workspace. "
-                "Use for writing, modifying, or analyzing code. "
-                "Supports session continuation via session_id. "
-                "Employee-eligible — employees can run this in the background."
+                "MANDATORY FOR ALL CODING TASKS. Run OpenCode to execute a "
+                "coding task in the current workspace. Use for writing, "
+                "modifying, scaffolding, refactoring, or analyzing code. "
+                "Handles multi-file edits, running builds (npm run build), "
+                "installing dependencies (npm install), git operations, and "
+                "session continuity automatically. DO NOT use run_command, "
+                "write_file, or patch for coding tasks — use this tool "
+                "instead. Employee-eligible; no approval required when "
+                "invoked by employee."
             ),
             classification=ToolClassification.LOCAL_MUTATION,
             input_schema=RunOpenCodeInput,
@@ -407,10 +412,11 @@ def register_builtin_tools(registry, supervisor=None) -> None:
         ToolDefinition(
             name="run_hermes",
             description=(
-                "Run Hermes to execute a general-purpose task in the current workspace. "
-                "Use for research, analysis, writing, or any non-coding task. "
-                "Supports session continuation via session_id. "
-                "Employee-eligible — employees can run this in the background."
+                "MANDATORY FOR ALL RESEARCH/ANALYSIS TASKS. Run Hermes to "
+                "execute a general-purpose task in the current workspace. "
+                "Use for research, analysis, writing, investigation, or any "
+                "non-coding task. Employee-eligible; no approval required "
+                "when invoked by employee."
             ),
             classification=ToolClassification.LOCAL_MUTATION,
             input_schema=RunHermesInput,
