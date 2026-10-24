@@ -614,3 +614,31 @@ roster/activity panel (Phase 9, API already exposed at `/api/workers*`).
   Without tracking, every employee task would start fresh, losing context.
   The table is per-employee (each has their own `sage.db`), so sessions
   are naturally isolated.
+
+---
+
+## Phase 14 — Permission Model Fixes & Employee Agent Integration
+
+### D32 — Read-only commands and employee agent tools skip approval
+
+**Decision:**
+- `run_command` with read-only commands (allowlist + no metacharacters) → `ALLOWED` without approval
+- `run_opencode` / `run_hermes` when invoked by an employee → `ALLOWED` without approval
+- Same tools when invoked directly by SAGE → `APPROVAL_REQUIRED` (SAGE direct call still needs consent)
+
+**Implementation:**
+- `PermissionEngine._is_read_only()` expanded to return `True` for agent tools when `current_employee_key()` is set
+- `run_opencode` / `run_hermes` classification changed: `EXTERNAL_SIDE_EFFECT` → `LOCAL_MUTATION` (isolated workspace, budgeted, verified)
+- Dynamic hook `_agent_requires_approval` now checks `current_employee_key()` — returns `False` (allow) for employees, `True` (require) for SAGE direct
+- Added `current_employee` context var (`app/tools/workspace.py`) set by Supervisor when spawning employee task
+
+**Why:** The original design treated all `EXTERNAL_SIDE_EFFECT` tools as requiring approval. But employees already operate under hard budgets (iterations, tokens, wall-clock), post-hoc verification, and SAGE's `cancel_task` kill switch. Requiring approval per agent call created an "approval storm" that made autonomous work impossible. The distinction preserves SAGE's authority for direct invocations while letting employees work autonomously.
+
+### D33 — Employee context propagation for correct agent session routing
+
+**Decision:**
+- Each employee's `run_opencode` / `run_hermes` calls now route to **that employee's own session DB** (`data/employees/<key>/sage.db`)
+- Fixed hardcoded paths in `builtin.py` (was always `charlie` for OpenCode, `alpha` for Hermes)
+- `AgentSessionManager` already tracked sessions per employee + backend + workspace — now correctly used
+
+**Why:** Previously all employees shared Charlie's OpenCode sessions and Alpha's Hermes sessions. Now Charlie resumes Charlie's sessions, Alpha resumes Alpha's. Session continuity (`--continue`, `--session`) works per-employee per-workspace as designed.

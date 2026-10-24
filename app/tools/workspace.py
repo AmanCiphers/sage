@@ -9,6 +9,10 @@ workspace for the duration of its turn (see `Employee.work`).
 Because asyncio tasks copy the current context, setting the variable inside
 a running assignment task affects only that employee's turns and never leaks
 into SAGE's conversation.
+
+Similarly, `current_employee` tracks which employee is currently executing
+so that agent tools (run_opencode, run_hermes) can route to the correct
+per-employee session database.
 """
 
 from __future__ import annotations
@@ -18,6 +22,10 @@ from pathlib import Path
 
 _workspace_override: ContextVar[Path | None] = ContextVar(
     "sage_workspace_override", default=None
+)
+
+_current_employee: ContextVar[str | None] = ContextVar(
+    "sage_current_employee", default=None
 )
 
 
@@ -41,3 +49,17 @@ def use_workspace(path: Path | str):
 
 def reset_workspace(token) -> None:
     _workspace_override.reset(token)
+
+
+def current_employee_key() -> str | None:
+    """Return the key of the currently executing employee (e.g., 'charlie')."""
+    return _current_employee.get()
+
+
+def use_employee(key: str):
+    """Set the current employee key; returns the token for resetting."""
+    return _current_employee.set(key)
+
+
+def reset_employee(token) -> None:
+    _current_employee.reset(token)

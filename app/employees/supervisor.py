@@ -32,6 +32,7 @@ from app.inference.manager import InferenceManager
 from app.permissions.engine import PermissionEngine
 from app.persistence.store import TaskStore
 from app.tools.registry import ToolRegistry
+from app.tools.workspace import reset_employee, use_employee
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +196,7 @@ class Supervisor:
             {"task_id": task_id, "worker": spec.key, "name": spec.name},
         )
 
+        employee_token = use_employee(spec.key)
         try:
             employee = await self._employee_for(spec)
             result: EmployeeResult = await employee.work(
@@ -212,6 +214,8 @@ class Supervisor:
             self._in_flight.pop(task_id, None)
             self._progress.pop(task_id, None)
             return
+        finally:
+            reset_employee(employee_token)
 
         if result.unknown:
             await self.task_store.set_status(
@@ -321,6 +325,7 @@ class Supervisor:
                 "worker": spec.key,
                 "id": spec.id,
                 "name": spec.name,
+                "role": spec.role,
                 "status": (
                     "active"
                     if spec.key in running_by_worker

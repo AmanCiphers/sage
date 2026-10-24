@@ -471,3 +471,110 @@ def test_employee_exposes_id_and_name():
     )
     assert employee.id == "employee-alpha"
     assert employee.name == "Alpha"
+
+
+# --- Employee uses agent tools for coding tasks ---
+
+async def test_charlie_uses_run_opencode_for_coding_task(database):
+    """Verify that Charlie (coder) calls run_opencode when given a coding objective."""
+    from app.tools.builtin import register_builtin_tools
+
+    tools = ToolRegistry()
+    register_builtin_tools(tools)
+
+    # Script: first call run_opencode, then return completion
+    scripted = [
+        InferenceResponse(
+            model="fake",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "run_opencode",
+                        "arguments": '{"objective": "Build a Next.js mobile menu component", "model": null, "session_id": null}',
+                    },
+                }
+            ],
+        ),
+        InferenceResponse(model="fake", content="Created mobile menu component in next-app"),
+    ]
+
+    supervisor = build_supervisor(
+        database,
+        registry=tools,
+        scripted=scripted,
+    )
+
+    task_id = await supervisor.assign("charlie", "Build a Next.js mobile menu component")
+    await asyncio.gather(*supervisor._background.values())
+
+    task = await supervisor.get_status(task_id)
+    assert task["status"] == "completed"
+    # The employee should have called run_opencode (side-effecting tool)
+    assert task["verification"] == "self-verified"
+    assert "run_opencode" in task["verification_detail"]
+
+
+async def test_alpha_uses_run_hermes_for_research_task(database):
+    """Verify that Alpha (researcher) calls run_hermes when given a research objective."""
+    from app.tools.builtin import register_builtin_tools
+
+    tools = ToolRegistry()
+    register_builtin_tools(tools)
+
+    scripted = [
+        InferenceResponse(
+            model="fake",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "run_hermes",
+                        "arguments": '{"objective": "Research React Server Components best practices", "model": null, "session_id": null}',
+                    },
+                }
+            ],
+        ),
+        InferenceResponse(model="fake", content="Research complete: RSC best practices documented"),
+    ]
+
+    supervisor = build_supervisor(
+        database,
+        registry=tools,
+        scripted=scripted,
+    )
+
+    task_id = await supervisor.assign("alpha", "Research React Server Components best practices")
+    await asyncio.gather(*supervisor._background.values())
+
+    task = await supervisor.get_status(task_id)
+    assert task["status"] == "completed"
+    assert task["verification"] == "self-verified"
+    assert "run_hermes" in task["verification_detail"]
+
+
+async def test_employee_system_prompt_includes_tools_guide(database):
+    """Verify employee's system prompt includes the tools guide."""
+    from app.tools.builtin import register_builtin_tools
+
+    tools = ToolRegistry()
+    register_builtin_tools(tools)
+
+    supervisor = build_supervisor(
+        database,
+        registry=tools,
+        scripted=[InferenceResponse(model="fake", content="ok")],
+    )
+
+    task_id = await supervisor.assign("charlie", "test")
+    await asyncio.gather(*supervisor._background.values())
+
+    employee = supervisor._employees["charlie"]
+    # The system prompt should contain both role card and tools guide
+    system_prompt = employee.loop.context_builder.system_prompt
+    assert "Charlie" in system_prompt
+    assert "run_opencode" in system_prompt
+    assert "run_hermes" in system_prompt
+    assert "Agent Backends" in system_prompt

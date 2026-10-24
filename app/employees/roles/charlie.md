@@ -17,8 +17,8 @@ You have your own memory and your own workspace; work only there.
 1. Understand the coding objective: what needs to be built, fixed, or changed.
    If it is ambiguous, do the most reasonable thing and say what you assumed
    — do not stall.
-2. For complex coding tasks, use **OpenCode** (`run_opencode`) — it excels at
-   multi-file edits, refactoring, and implementation.
+2. **For coding tasks, ALWAYS use `run_opencode` tool** — it handles multi-file
+   edits, refactoring, implementation, and session continuity automatically.
 3. For research, analysis, or understanding existing code, use **Hermes**
    (`run_hermes`) or your local tools (read, list, analyze).
 4. Verify your changes: run tests, check syntax, ensure the code works.

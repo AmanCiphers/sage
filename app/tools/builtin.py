@@ -180,8 +180,9 @@ def _enable_disable_requires_approval(arguments: dict) -> bool:
 
 
 def _agent_requires_approval(arguments: dict) -> bool:
-    """Agent backends - no approval needed."""
-    return False
+    """Agent backends - no approval needed when invoked by employee."""
+    from app.tools.workspace import current_employee_key
+    return current_employee_key() is None
 
 
 async def run_opencode(
@@ -194,21 +195,21 @@ async def run_opencode(
     from app.agents.sessions import AgentSessionManager
     from app.config import settings
     from app.persistence.database import Database
-    from app.tools.workspace import current_workspace
+    from app.tools.workspace import current_employee_key, current_workspace
 
     workspace = str(current_workspace())
+    employee_key = current_employee_key() or "charlie"
     backend = get_opencode_backend(workspace)
     await backend.start()
 
-    # Get or create session
-    db_path = settings.database_path.parent / "employees" / "charlie" / "sage.db"
-    # TODO: Get employee key from context - for now use charlie as coder
+    # Get or create session for the calling employee
+    db_path = settings.database_path.parent / "employees" / employee_key / "sage.db"
     db = Database(db_path)
     await db.connect()
     session_mgr = AgentSessionManager(db)
 
     session = await session_mgr.get_or_create_session(
-        employee_key="charlie",
+        employee_key=employee_key,
         backend="opencode",
         workspace_path=workspace,
         objective=objective,
@@ -253,21 +254,21 @@ async def run_hermes(
     from app.agents.sessions import AgentSessionManager
     from app.config import settings
     from app.persistence.database import Database
-    from app.tools.workspace import current_workspace
+    from app.tools.workspace import current_employee_key, current_workspace
 
     workspace = str(current_workspace())
+    employee_key = current_employee_key() or "alpha"
     backend = get_hermes_backend(workspace)
     await backend.start()
 
-    # Get or create session - determine employee from context
-    # For now, use a default employee key
-    db_path = settings.database_path.parent / "employees" / "alpha" / "sage.db"
+    # Get or create session for the calling employee
+    db_path = settings.database_path.parent / "employees" / employee_key / "sage.db"
     db = Database(db_path)
     await db.connect()
     session_mgr = AgentSessionManager(db)
 
     session = await session_mgr.get_or_create_session(
-        employee_key="alpha",
+        employee_key=employee_key,
         backend="hermes",
         workspace_path=workspace,
         objective=objective,
@@ -373,7 +374,7 @@ def register_builtin_tools(registry, supervisor=None) -> None:
                 "Supports session continuation via session_id. "
                 "Employee-eligible — employees can run this in the background."
             ),
-            classification=ToolClassification.EXTERNAL_SIDE_EFFECT,
+            classification=ToolClassification.LOCAL_MUTATION,
             input_schema=RunOpenCodeInput,
             destructive=False,
             employee_eligible=True,
@@ -391,7 +392,7 @@ def register_builtin_tools(registry, supervisor=None) -> None:
                 "Supports session continuation via session_id. "
                 "Employee-eligible — employees can run this in the background."
             ),
-            classification=ToolClassification.EXTERNAL_SIDE_EFFECT,
+            classification=ToolClassification.LOCAL_MUTATION,
             input_schema=RunHermesInput,
             destructive=False,
             employee_eligible=True,

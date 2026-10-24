@@ -191,6 +191,55 @@ Changes from the web-UI integration work that were **not** recorded in
 - **Files:** `app/config.py`, `app/tools/builtin.py` (`cancel_task`), `app/employees/supervisor.py` (`cancel_task`)
 - **Why:** Hard timeouts were killing legitimate long-running coding tasks. SAGE-as-manager should decide when to intervene, not a timer.
 
+## A13 — Permission fixes: read-only commands + employee agent tools  *(2026-10-24)*
+
+- **Area:** Permissions / Employees / Tooling
+- **Change:**
+  - `run_command` with read-only commands (allowlist + no metacharacters: `ls`, `cat`, `grep`, `git status`, etc.) → no approval required
+  - `run_opencode` / `run_hermes` when invoked by an employee → no approval required (budgeted, verified, cancellable)
+  - Same tools when invoked directly by SAGE → still require approval
+  - Agent tool classification changed: `EXTERNAL_SIDE_EFFECT` → `LOCAL_MUTATION`
+  - Fixed hardcoded employee DB paths: `run_opencode` now uses calling employee's session DB (was always `charlie`); `run_hermes` uses calling employee's DB (was always `alpha`)
+  - Added `current_employee` context var (`app/tools/workspace.py`) set by Supervisor when spawning employee task
+  - Updated Charlie's role card: explicit instruction to use `run_opencode` for coding tasks
+- **Files:** `app/permissions/engine.py`, `app/tools/builtin.py`, `app/tools/workspace.py`, `app/employees/supervisor.py`, `app/employees/roles/charlie.md`
+- **Why:** Approval per agent call made autonomous employee work impossible ("approval storm"). Employees already have hard budgets, verification, and SAGE's `cancel_task` kill switch. Read-only commands were incorrectly gated by `EXTERNAL_SIDE_EFFECT` check. Hardcoded DB paths broke session continuity for non-Charlie/Alpha employees.
+
+## A14 — Employee roster aliases + role display  *(2026-10-24)*
+
+- **Area:** Employees / CLI
+- **Change:**
+  - Added `role` field to `EmployeeSpec` with one-line descriptions (Coder, Researcher, Writer, Verifier, Organizer)
+  - Added `_ALIASES` mapping: "coder" → "charlie", "researcher" → "alpha", "writer" → "otto", "verifier" → "tony", "organizer" → "asta"
+  - `normalize()` now accepts role aliases (e.g., `assign_task(worker="coder", ...)` works)
+  - `roster_status()` API now includes `role` field for UI display
+  - Added `roster_summary()` helper for simple display
+- **Files:** `app/employees/roster.py`, `app/employees/supervisor.py`
+- **Why:** User said "coder employee" but SAGE didn't recognize it. Now "coder", "engineer", "developer" all resolve to Charlie. Roster display shows correct roles instead of hallucinated descriptions.
+
+## A15 — Voice architecture: full-duplex WebRTC + token-level streaming  *(2026-10-24)*
+
+- **Area:** Voice / Architecture
+- **Change:**
+  - Pipeline: WebRTC (Opus) → Silero VAD (streaming, noise suppression) → Streaming ASR → SAGE → Streaming LLM → Token-level streaming TTS → WebRTC
+  - Full-duplex: simultaneous send/receive, no half-duplex turn-taking
+  - Barge-in: Silero VAD runs during TTS; detection → immediate TTS cancel + LLM abort + ASR flush
+  - Token-level TTS: first audio at ~80-120ms after first LLM token (no sentence-boundary wait)
+  - Noise suppression + AEC3 echo cancellation integrated
+- **Files:** `docs/ArchitectureV2.md` (sections 57-59)
+- **Why:** Previous architecture was half-duplex with sentence-level streaming. Full-duplex WebRTC + token-level TTS enables natural conversation with mid-speech interruption.
+
+## A16 — Employee tool usage guide + agent tool integration  *(2026-10-24)*
+
+- **Area:** Employees / Tooling
+- **Change:**
+  - Updated `tools.md` with full documentation for `run_opencode` and `run_hermes` (when to use, permission model, session continuity)
+  - Fixed role mapping in `tools.md`: Charlie → "Coder / Engineer" (was "organizing/operations")
+  - Employees now receive `tools.md` content in their system prompt (appended to role card) via `app/employees/factory.py`
+  - Added integration tests verifying Charlie calls `run_opencode` for coding tasks, Alpha calls `run_hermes` for research
+- **Files:** `app/conversation/tools.md`, `app/employees/factory.py`, `tests/unit/test_employees.py`
+- **Why:** Employees had role cards saying "use run_opencode" but no tool usage guide in their system prompt. They couldn't make informed tool choices. Now they get the same tool guidance as SAGE.
+
 ---
 
 # Part B — Proposed: Employee Workers

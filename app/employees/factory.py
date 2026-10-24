@@ -79,6 +79,14 @@ def _load_role_card(key: str) -> str:
     )
 
 
+def _load_tools_guide() -> str:
+    """Load the shared TOOLS.md guide for employee system prompts."""
+    path = Path(__file__).parent.parent / "conversation" / "tools.md"
+    if path.exists():
+        return path.read_text(encoding="utf-8").strip()
+    return ""
+
+
 async def build_employee(
     worker: str | EmployeeSpec,
     *,
@@ -134,12 +142,14 @@ async def build_employee(
     )
 
     role_card = _load_role_card(spec.key)
+    tools_guide = _load_tools_guide()
+    system_prompt = role_card + "\n\n---\n\n" + tools_guide if tools_guide else role_card
 
     context_builder = ContextBuilder(
         message_store=message_store,
         session_state=session_state,
         compressor=compressor,
-        system_prompt=role_card,
+        system_prompt=system_prompt,
         history_fetch_limit=settings.history_fetch_limit,
         memory_store=memory_store,
         embedding_store=emp_embedding_store,

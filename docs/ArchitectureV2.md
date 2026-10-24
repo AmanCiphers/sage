@@ -1798,71 +1798,83 @@ SAGE decides whether the result deserves action.
 
 # 57. Voice Architecture
 
-Final voice pipeline:
+**Full-duplex WebRTC with token-level streaming synthesis.**
 
+Pipeline:
 ```text
 Microphone
- ↓
-Wake Word
- ↓
-VAD
- ↓
-Whisper
- ↓
-SAGE
- ↓
-Execution
- ↓
-LLM Response
- ↓
-Chatterbox
- ↓
-Speaker
+  ↓
+WebRTC (Opus, 48kHz, echo cancellation)
+  ↓
+Silero VAD (streaming, 30ms frames, noise suppression ON)
+  ↓
+┌──────────────────────────────────────────────┐
+│  Barge-In Detection (parallel path)          │
+│  • VAD triggers during TTS playback          │
+│  • Immediate TTS cancel + context flush      │
+│  • User audio buffered for ASR               │
+└──────────────────────────────────────────────┘
+  ↓
+Streaming ASR (Whisper.cpp / faster-whisper, token-level)
+  ↓
+SAGE (conversation engine)
+  ↓
+Streaming LLM (token-level)
+  ↓
+Token-level Streaming TTS (Chatterbox / Kokoro / Piper)
+  ↓
+WebRTC audio track (Opus) → Speaker
 ```
+
+Key properties:
+- **Full-duplex**: WebRTC handles simultaneous send/receive; no half-duplex turn-taking
+- **Token-level streaming**: TTS starts at first token, not sentence boundary — <100ms first-audio latency
+- **Barge-in**: Silero VAD runs continuously during TTS playback; detection → immediate TTS stop + LLM cancel + ASR flush
+- **Noise suppression**: RNNoise / WebRTC NS integrated in VAD front-end
+- **Echo cancellation**: WebRTC AEC3 for full-duplex without feedback
 
 Voice is another client of SAGE, not a separate intelligence system.
 
 ---
 
-# 58. Voice Barge-In
-
-SAGE supports interruption:
+# 58. Voice Barge-In (Detailed)
 
 ```text
-SAGE speaking
- ↓
-User says "Stop"
- ↓
-VAD detects speech
- ↓
-stop TTS
- ↓
-cancel response
- ↓
-return to listening
+TTS playing (token stream)
+  ↓
+Silero VAD (continuous, 30ms frames)
+  ↓
+Speech detected during playback
+  ├─→ Cancel TTS stream immediately (WebRTC track stop)
+  ├─→ Send cancellation to LLM (abort generation)
+  ├─→ Flush ASR buffer (start fresh from barge-in point)
+  └─→ User audio → ASR → SAGE (new turn)
 ```
 
-This is required for natural conversational interaction.
+- VAD threshold tuned for barge-in sensitivity (lower than idle VAD)
+- Minimum barge-in audio: ~300ms before action
+- TTS cancellation propagates to token stream (no wasted compute)
 
 ---
 
-# 59. Streaming Voice
-
-Eventually:
+# 59. Streaming Voice (Token-Level)
 
 ```text
-LLM
- ↓
-sentence boundary
- ↓
-Chatterbox
- ↓
-audio chunk
- ↓
-speaker
+LLM (streaming tokens)
+  ↓
+Token buffer (accumulate ~10-20 tokens / phoneme chunk)
+  ↓
+Streaming TTS (Chatterbox / Kokoro — supports incremental synthesis)
+  ↓
+Audio chunks → WebRTC send track (Opus, 20ms frames)
+  ↓
+Speaker (browser / native client)
 ```
 
-SAGE should not wait for the entire response before beginning speech where streaming is supported.
+- First audio chunk at ~80-120ms after first LLM token
+- No sentence-boundary wait — phoneme-level chunking
+- Backpressure: TTS slows if WebRTC send buffer full
+- Fallback: if streaming TTS unavailable, fall back to sentence-level
 
 ---
 

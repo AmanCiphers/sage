@@ -19,6 +19,7 @@ from app.permissions.models import (
 )
 from app.permissions.smart import SmartGuardian, get_smart_guardian
 from app.tools.models import ToolDefinition
+from app.tools.workspace import current_employee_key
 
 
 class PermissionEngine:
@@ -197,7 +198,10 @@ class PermissionEngine:
             if is_read_only_command(cmd):
                 return True
 
-        return False
+        # Agent tools (run_opencode, run_hermes) when invoked by an employee
+        # are budgeted, verified, and run in isolated workspace — no approval needed
+        is_agent_tool = request.tool_name in ("run_opencode", "run_hermes")
+        return bool(is_agent_tool and current_employee_key() is not None)
 
     def _check_danger(self, request: PermissionRequest) -> tuple[bool, str, str] | None:
         """Check for dangerous patterns."""
