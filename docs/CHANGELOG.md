@@ -310,6 +310,13 @@ Changes from the web-UI integration work that were **not** recorded in
 - **Files:** `AGENTS.md` (new), `docs/CHANGELOG.md`, `docs/DECISIONS.md`, `docs/ArchitectureV2.md`
 - **Why:** Several design docs diverged from the running system (D14 said no embeddings; §30–33 memory features are unimplemented). A persistent AGENTS.md reminder prevents future staleness and keeps the decision log authoritative.
 
+## A23 — Fix grep/glob asyncio conflict  *(2026-10-24)*
+
+- **Area:** Tools
+- **Change:** Made `grep` and `glob` (and their shared `_run` helper) **async** so they await the ripgrep subprocess directly inside SAGE's running event loop. Previously they used `asyncio.run()`, which crashed with *"asyncio.run() cannot be called from a running event loop"* whenever SAGE invoked them.
+- **Files:** `app/tools/investigation.py`, `tests/unit/test_investigation_and_polling.py`
+- **Why:** `web_search`/`browse_url` worked because they use sync stdlib HTTP, but the ripgrep subprocess helpers tried to spin their own loop. Making them async aligns with the `ExecutionEngine` (which awaits async handlers) and fixes the crash.
+
 ---
 
 # Part B — Proposed: Employee Workers

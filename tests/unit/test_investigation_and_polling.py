@@ -27,33 +27,33 @@ def _has_ripgrep():
 
 
 @pytest.mark.skipif(not _has_ripgrep(), reason="ripgrep not installed")
-def test_grep_finds_content(tmp_path):
+async def test_grep_finds_content(tmp_path):
     from app.tools.investigation import grep
 
     f = tmp_path / "sample.py"
     f.write_text("def hello():\n    return 1\n")
 
-    result = json.loads(grep("def hello", path=str(tmp_path), include="*.py", limit=10))
+    result = json.loads(await grep("def hello", path=str(tmp_path), include="*.py", limit=10))
     assert result["count"] >= 1
     assert any("sample.py" in m and "hello" in m for m in result["matches"])
 
 
 @pytest.mark.skipif(not _has_ripgrep(), reason="ripgrep not installed")
-def test_grep_requires_pattern():
+async def test_grep_requires_pattern():
     from app.tools.investigation import grep
 
-    result = json.loads(grep(""))
+    result = json.loads(await grep(""))
     assert "error" in result
 
 
 @pytest.mark.skipif(not _has_ripgrep(), reason="ripgrep not installed")
-def test_glob_finds_files(tmp_path):
+async def test_glob_finds_files(tmp_path):
     from app.tools.investigation import glob
 
     (tmp_path / "a.py").write_text("x")
     (tmp_path / "b.md").write_text("y")
 
-    result = json.loads(glob("**/*.py", path=str(tmp_path)))
+    result = json.loads(await glob("**/*.py", path=str(tmp_path)))
     assert any("a.py" in f for f in result["files"])
 
 

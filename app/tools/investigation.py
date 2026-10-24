@@ -30,29 +30,30 @@ def _has_ripgrep() -> bool:
     return shutil.which("rg") is not None
 
 
-def _run(args: list[str], cwd: Path, timeout: int) -> tuple[str, str, int]:
-    """Run a subprocess and return (stdout, stderr, returncode)."""
+async def _run(args: list[str], cwd: Path, timeout: int) -> tuple[str, str, int]:
+    """Run a subprocess and return (stdout, stderr, returncode).
 
-    async def _inner() -> tuple[str, str, int]:
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            cwd=str(cwd),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+    Async so it can be awaited inside SAGE's running event loop (the
+    previous `asyncio.run()` crashed with "cannot be called from a running
+    event loop").
+    """
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        cwd=str(cwd),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        return (
+            out.decode("utf-8", errors="replace"),
+            err.decode("utf-8", errors="replace"),
+            proc.returncode,
         )
-        try:
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-            return (
-                out.decode("utf-8", errors="replace"),
-                err.decode("utf-8", errors="replace"),
-                proc.returncode,
-            )
-        except TimeoutError:
-            proc.kill()
-            await proc.wait()
-            return "", f"timed out after {timeout}s", -1
-
-    return asyncio.run(_inner())
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return "", f"timed out after {timeout}s", -1
 
 
 # ---------------------------------------------------------------- grep ----
@@ -75,7 +76,7 @@ def _resolve_search_root(path: str) -> Path:
     return root
 
 
-def grep(
+async def grep(
     pattern: str,
     path: str = ".",
     include: str | None = None,
@@ -102,7 +103,7 @@ def grep(
     cmd.extend(["--", pattern])
 
     started = time.perf_counter()
-    out, err, code = _run(cmd, cwd, DEFAULT_SEARCH_TIMEOUT_SECONDS)
+    out, err, code = await _run(cmd, cwd, DEFAULT_SEARCH_TIMEOUT_SECONDS)
 
     if code == 2:
         return json.dumps({"error": f"ripgrep error: {err.strip() or 'invalid pattern'}"})
@@ -140,7 +141,7 @@ class GlobInput(ToolInput):
     limit: int = DEFAULT_SEARCH_LIMIT
 
 
-def glob(
+async def glob(
     pattern: str,
     path: str = ".",
     hidden: bool = False,
@@ -161,7 +162,7 @@ def glob(
     cmd.extend(["-g", pattern])
 
     started = time.perf_counter()
-    out, err, code = _run(cmd, cwd, DEFAULT_SEARCH_TIMEOUT_SECONDS)
+    out, err, code = await _run(cmd, cwd, DEFAULT_SEARCH_TIMEOUT_SECONDS)
 
     if code == 2:
         return json.dumps({"error": f"ripgrep error: {err.strip() or 'invalid glob pattern'}"})
