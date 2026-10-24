@@ -24,10 +24,10 @@ class Settings(BaseSettings):
 
     # Employee assignment budgets (0/None = unlimited). Iterations and
     # tokens are unlimited by default — tool calls are cheap; wall-clock
-    # is the sole runaway guard.
+    # is not a runaway guard (SAGE can cancel via cancel_task).
     employee_max_iterations: int = 0
     employee_max_tokens: int = 0
-    employee_max_wall_seconds: float = 600.0
+    employee_max_wall_seconds: float = 0.0
 
     # Context / compaction (forever-running chat).
     context_window_tokens: int = 32000
@@ -39,6 +39,25 @@ class Settings(BaseSettings):
 
     nebius_api_key: str | None = None
     nebius_base_url: str = "https://api.tokenfactory.nebius.com/v1"
+
+    # Agent Backends (OpenCode, Hermes)
+    opencode_path: str = "opencode"
+    hermes_path: str = "hermes"
+    opencode_default_model: str = "nebius/deepseek-ai/DeepSeek-V4-Flash-0731"
+    hermes_default_model: str = "openai/gpt-4"
+
+    # RAG (Hybrid FTS5 + Embeddings)
+    rag_enabled: bool = True
+    rag_top_k: int = 5
+    rag_fts_weight: float = 0.4
+    rag_embedding_weight: float = 0.6
+    rag_similarity_threshold: float = 0.65
+    rag_exclude_recent_turns: int = 20
+    # NVIDIA free tier: nemotron-3-embed-1b (1024 dim)
+    # Nebius: Qwen/Qwen3-Embedding-8B (4096 dim, supports Matryoshka)
+    rag_embedding_model: str = "nvidia/nemotron-3-embed-1b"
+    rag_fallback_model: str = "Qwen/Qwen3-Embedding-8B"
+    rag_embedding_dim: int = 1024
 
     model_config = SettingsConfigDict(
         env_file=".env",

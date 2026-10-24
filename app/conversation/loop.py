@@ -182,6 +182,7 @@ class ConversationLoop:
                 )
                 if approval_id:
                     pending_approval_id = approval_id
+                    break
                 continue
 
             final_content = response.content
@@ -189,13 +190,18 @@ class ConversationLoop:
             break
 
         if final_content is None:
-            final_content = (
-                "I couldn't finish that within the iteration budget. "
-                "Try narrowing the request."
-            )
-            if on_delta is not None:
-                await on_delta(final_content)
-            await self.message_store.append_assistant(final_content)
+            if pending_approval_id:
+                # Turn ended due to approval - no final content, just return
+                # the pending approval to the caller.
+                final_content = ""
+            else:
+                final_content = (
+                    "I couldn't finish that within the iteration budget. "
+                    "Try narrowing the request."
+                )
+                if on_delta is not None:
+                    await on_delta(final_content)
+                await self.message_store.append_assistant(final_content)
 
         self.logger.info(
             "[%s] RESPONSE | %s%s",
@@ -254,6 +260,22 @@ class ConversationLoop:
             result, approval_id = await self._execute_call(call)
             duration_ms = (time.perf_counter() - started) * 1000
             tool_call_id = call.get("id", "unknown")
+
+            # If approval is required, stop immediately - don't feed
+            # anything back to the LLM. The turn ends and returns
+            # the pending approval to the caller.
+            if result == "__APPROVAL_REQUIRED__":
+                await self._emit(
+                    LoopEvent(
+                        type="approval",
+                        tool_name=tool_name,
+                        approval_id=approval_id,
+                        resource=arguments_resource(call),
+                    )
+                )
+                # Don't append tool result or add to history - just return
+                # the pending approval so the turn stops here.
+                return history, approval_id
 
             try:
                 success = bool(json.loads(result).get("success"))
@@ -341,21 +363,9 @@ class ConversationLoop:
                 "approval_requested approval_id=%s tool=%s", approval_id, name
             )
 
-            return (
-                json.dumps(
-                    {
-                        "success": False,
-                        "approval_required": True,
-                        "approval_id": approval_id,
-                        "message": (
-                            "This action needs user approval. Explain what "
-                            "the action does and its risk, then wait for "
-                            "the user's decision."
-                        ),
-                    }
-                ),
-                approval_id,
-            )
+            # Signal to the loop to STOP and return pending approval.
+            # Do NOT feed anything back to the LLM - the turn ends here.
+            return ("__APPROVAL_REQUIRED__", approval_id)
 
         if decision != PermissionDecision.ALLOWED:
             return self._tool_error(

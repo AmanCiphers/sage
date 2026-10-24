@@ -84,6 +84,7 @@ class Supervisor:
         if self.event_bus is None:
             return
         try:
+            logger.debug("supervisor_publish", event_type=event_type, worker=payload.get("worker"))
             await self.event_bus.publish(
                 Event(
                     event_type=event_type,
@@ -125,6 +126,65 @@ class Supervisor:
             "assignment_created task_id=%s worker=%s", task_id, spec.key
         )
         return task_id
+
+    async def assign_auto(self, objective: str) -> str:
+        """Auto-select the best employee for the objective and assign the task."""
+        worker = self._select_best_worker(objective)
+        return await self.assign(worker, objective)
+
+    def _select_best_worker(self, objective: str) -> str:
+        """Select the best employee based on the objective keywords."""
+        obj_lower = objective.lower()
+
+        # Coding tasks → Charlie
+        coding_keywords = [
+            "code", "coding", "program", "develop", "build", "scaffold",
+            "nextjs", "react", "typescript", "javascript", "python",
+            "api", "backend", "frontend", "webapp", "app", "create",
+            "write code", "implement", "refactor", "debug", "fix",
+            "opencode", "github", "git", "repository", "script"
+        ]
+
+        # Research/analysis → Alpha
+        research_keywords = [
+            "research", "analyze", "investigate", "study", "survey",
+            "explore", "understand", "learn", "find out", "compare",
+            "evaluate", "assess", "review", "examine", "inspect"
+        ]
+
+        # Writing/documentation → Otto
+        writing_keywords = [
+            "write", "draft", "document", "summarize", "report",
+            "article", "blog", "post", "email", "letter", "prose",
+            "edit", "proofread", "format", "compose"
+        ]
+
+        # Verification/fact-check → Tony
+        verification_keywords = [
+            "verify", "check", "validate", "confirm", "audit",
+            "fact-check", "test", "ensure", "prove"
+        ]
+
+        # Organization/files → Asta
+        organization_keywords = [
+            "organize", "list", "catalog", "inventory", "sort",
+            "arrange", "structure", "clean", "tidy", "file"
+        ]
+
+        # Check in order of specificity
+        if any(kw in obj_lower for kw in coding_keywords):
+            return "charlie"
+        elif any(kw in obj_lower for kw in research_keywords):
+            return "alpha"
+        elif any(kw in obj_lower for kw in writing_keywords):
+            return "otto"
+        elif any(kw in obj_lower for kw in verification_keywords):
+            return "tony"
+        elif any(kw in obj_lower for kw in organization_keywords):
+            return "asta"
+
+        # Default to Charlie for general tasks
+        return "charlie"
 
     async def _run(
         self, task_id: str, spec: EmployeeSpec, objective: str
@@ -276,6 +336,34 @@ class Supervisor:
 
         spec = get_spec(worker)  # raises KeyError for unknown worker
         return await self.task_store.list_for_worker(spec.key, limit=limit)
+
+    async def cancel_task(self, task_id: str, reason: str = "Cancelled by SAGE") -> None:
+        """Cancel a running background task."""
+        task = self._background.get(task_id)
+        if task is None:
+            # Task not in flight - maybe already completed or unknown
+            # Update task store status
+            await self.task_store.set_status(task_id, "cancelled", error=reason)
+            return
+
+        # Cancel the asyncio task
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning("task_cancel_error task_id=%s error=%s", task_id, e)
+
+        # Update task store
+        await self.task_store.set_status(task_id, "cancelled", error=reason)
+
+        # Clean up tracking
+        self._background.pop(task_id, None)
+        self._in_flight.pop(task_id, None)
+        self._progress.pop(task_id, None)
+
+        logger.info("task_cancelled task_id=%s reason=%s", task_id, reason)
 
     async def shutdown(self) -> None:
         """Await outstanding assignments; cancel if they overrun."""

@@ -4,6 +4,7 @@ from app.context.compressor import ContextCompressor
 from app.conversation.loop import ConversationLoop
 from app.conversation.models import AssistantResponse, UserMessage
 from app.conversation.system_prompt import get_system_prompt
+from app.embeddings import EmbeddingStore, create_primary_provider
 from app.employees.budgets import Budget
 from app.employees.supervisor import Supervisor
 from app.events.bus import EventBus
@@ -36,6 +37,20 @@ from app.tools.session_search import register_session_search
 from app.tools.shell_tools import register_shell_tools
 from config.model_catalog import get_model_catalog
 
+# Global SAGE application instance (set during startup)
+_sage_app: "SAGEApplication | None" = None
+
+
+def get_sage_app() -> "SAGEApplication | None":
+    """Get the global SAGE application instance."""
+    return _sage_app
+
+
+def set_sage_app(app: "SAGEApplication | None") -> None:
+    """Set the global SAGE application instance."""
+    global _sage_app
+    _sage_app = app
+
 
 class SAGEApplication:
     def __init__(self) -> None:
@@ -45,7 +60,17 @@ class SAGEApplication:
             settings.database_path,
         )
 
-        self.message_store = MessageStore(self.database)
+        # Embedding provider & store for RAG (must be created before MessageStore)
+        self.embedding_provider = create_primary_provider()
+        self.embedding_store = None
+        if self.embedding_provider:
+            self.embedding_store = EmbeddingStore(self.database, self.embedding_provider)
+
+        self.message_store = MessageStore(
+            self.database,
+            embedding_provider=self.embedding_provider,
+            embedding_store=self.embedding_store,
+        )
         self.session_state = SessionStateStore(self.database)
         self.task_store = TaskStore(self.database)
         self.memory_store = MemoryStore(
@@ -161,6 +186,8 @@ class SAGEApplication:
             system_prompt=get_system_prompt(self.memory_store),
             history_fetch_limit=settings.history_fetch_limit,
             memory_store=self.memory_store,
+            embedding_store=self.embedding_store,
+            embedding_provider=self.embedding_provider,
         )
 
         self.conversation_engine = ConversationLoop(
@@ -359,6 +386,8 @@ class SAGEApplication:
         return await self.conversation_engine.handle(message)
 
     async def start(self) -> None:
+        set_sage_app(self)
+
         self.logger.info(
             "starting_sage",
             environment=settings.environment,
@@ -366,6 +395,9 @@ class SAGEApplication:
 
         await self.database.connect()
         await initialize_schema(self.database)
+
+        # Initialize employee databases
+        await self._initialize_employee_databases()
 
         # Initialize event system
         await self.event_store.initialize()
@@ -417,6 +449,39 @@ class SAGEApplication:
         # Wait for outstanding employee assignments, then close their stores.
         await self.supervisor.shutdown()
 
+        # Close embedding provider
+        if self.embedding_provider:
+            await self.embedding_provider.close()
+
         await self.database.close()
 
+        set_sage_app(None)
+
         self.logger.info("sage_stopped")
+
+    async def _initialize_employee_databases(self) -> None:
+        """Initialize all employee databases at startup so tools can access them."""
+        from app.config import settings
+        from app.employees.roster import ROSTER
+        from app.persistence.database import Database
+        from app.persistence.schema import initialize_schema
+
+        self.logger.info("initializing_employee_databases")
+
+        for spec in ROSTER:
+            try:
+                root = settings.database_path.parent / "employees" / spec.key
+                root.mkdir(parents=True, exist_ok=True)
+                (root / "workspace").mkdir(parents=True, exist_ok=True)
+
+                db_path = root / "sage.db"
+                database = Database(db_path)
+                await database.connect()
+                await initialize_schema(database)
+                await database.close()
+
+                self.logger.info("employee_database_initialized", worker=spec.key)
+            except Exception as e:
+                self.logger.warning("employee_database_init_failed", worker=spec.key, error=str(e))
+
+        self.logger.info("all_employee_databases_initialized")

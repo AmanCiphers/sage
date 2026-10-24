@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import EmployeePanel, { EmployeeRow, EmployeeLogLine } from "./EmployeePanel";
 import { fmtClock, fmtElapsed, fmtMs, fmtChars, shortModel } from "@/lib/format";
 
 interface Line {
@@ -37,17 +38,11 @@ interface SysEvent {
   eventType: string;
   summary: string;
   correlationId?: string;
-}
-
-interface TaskRow {
-  task_id: string;
-  objective: string;
-  tool_name: string;
-  status: string;
-  error?: string | null;
-  created_at?: string;
-  started_at?: string | null;
-  completed_at?: string | null;
+  worker?: string;
+  name?: string;
+  taskId?: string;
+  stage?: string;
+  tool?: string;
 }
 
 const TONE = {
@@ -197,71 +192,6 @@ function Row({ label, value, tone = "text-zinc-300" }: { label: string; value: s
   );
 }
 
-const STATUS_TONE: Record<string, string> = {
-  queued: "text-zinc-500",
-  running: "text-emerald-500/80",
-  completed: "text-zinc-400",
-  failed: "text-rose-500/80",
-  unknown: "text-amber-500/80",
-};
-
-function WorkerPanel({ tasks, events }: { tasks: TaskRow[]; events: SysEvent[] }) {
-  const workerEvents = events
-    .filter((e) => e.source === "worker" || e.eventType.startsWith("task_") || e.eventType.startsWith("worker_"))
-    .slice(0, 8);
-  const active = tasks.filter((t) => t.status === "running" || t.status === "queued").length;
-
-  return (
-    <div className="flex min-h-0 flex-col border border-zinc-800 bg-zinc-950">
-      <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-2">
-        <span className="text-sm font-medium text-zinc-300">workers</span>
-        <span className="text-[10px] uppercase tracking-[0.15em] text-zinc-600">
-          {active} active · {tasks.length} total
-        </span>
-      </div>
-
-      <div className="max-h-[240px] min-h-0 overflow-y-auto">
-        {tasks.length === 0 ? (
-          <div className="px-4 py-4 text-[11px] text-zinc-700">no background tasks</div>
-        ) : (
-          <div className="divide-y divide-zinc-900">
-            {tasks.slice(0, 12).map((t) => (
-              <div key={t.task_id} className="px-4 py-2">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-[12px] text-zinc-300">{t.objective || t.tool_name}</span>
-                  <span className={`shrink-0 text-[10px] uppercase tracking-[0.15em] ${STATUS_TONE[t.status] || "text-zinc-500"}`}>
-                    {t.status}
-                  </span>
-                </div>
-                <div className="mt-0.5 flex items-center justify-between gap-2 text-[10px] text-zinc-600">
-                  <span className="truncate">{t.tool_name} · {t.task_id}</span>
-                </div>
-                {t.status === "failed" && t.error && (
-                  <div className="mt-0.5 truncate text-[10px] text-rose-500/70">{t.error}</div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {workerEvents.length > 0 && (
-          <div className="border-t border-zinc-900 px-4 py-2">
-            <div className="mb-1 text-[10px] uppercase tracking-[0.15em] text-zinc-700">activity</div>
-            <div className="space-y-0.5">
-              {workerEvents.map((e) => (
-                <div key={e.id} className="flex gap-2 text-[10px] text-zinc-600">
-                  <span className="shrink-0 text-zinc-800">{fmtClock(e.at)}</span>
-                  <span className="truncate">{e.summary}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 export default function Console() {
   const [lines, setLines] = useState<Line[]>(() => createBootLines());
   const [info, setInfo] = useState<InfoResponse>({
@@ -286,9 +216,10 @@ export default function Console() {
   }>(emptyStats());
   const [approval, setApproval] = useState<Approval | null>(null);
   const [thinking, setThinking] = useState(false);
-  const [sysEvents, setSysEvents] = useState<SysEvent[]>([]);
-  const [tasks, setTasks] = useState<TaskRow[]>([]);
+  const [employees, setEmployees] = useState<EmployeeRow[]>([]);
+  const [activityByWorker, setActivityByWorker] = useState<Record<string, EmployeeLogLine[]>>({});
   const [now, setNow] = useState(0);
+  const noticesPolledRef = useRef(false);
 
   const seq = useRef(0);
   const startedAt = useRef(0);
@@ -347,27 +278,30 @@ export default function Console() {
       wsRef.current = ws;
 
       ws.onopen = () => {
-        console.log("WebSocket connected");
+        console.log("[ws] connected");
         setApiUp(true);
       };
 
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
+          if (msg.type === "event") {
+            console.log("[ws] event:", msg.event_type, msg.worker, msg.summary);
+          }
           handleWsMessage(msg);
         } catch (e) {
-          console.error("WS parse error:", e);
+          console.error("[ws] parse error:", e);
         }
       };
 
       ws.onclose = () => {
-        console.log("WebSocket disconnected, reconnecting...");
+        console.log("[ws] disconnected, reconnecting...");
         setApiUp(false);
         setTimeout(connect, 2000);
       };
 
       ws.onerror = (err) => {
-        console.error("WebSocket error:", err);
+        console.error("[ws] error:", err);
       };
     };
 
@@ -379,18 +313,72 @@ export default function Console() {
     };
   }, []);
 
+  const appendEmployeeActivity = useCallback((ev: SysEvent) => {
+    const worker = ev.worker;
+    if (!worker) return;
+
+    const kind: EmployeeLogLine["kind"] | null =
+      ev.eventType === "employee_assigned"
+        ? "assigned"
+        : ev.eventType === "employee_finished"
+          ? "finish"
+          : ev.eventType === "task_failed"
+            ? "fail"
+            : ev.eventType === "employee_activity"
+              ? ev.tool
+                ? "tool"
+                : "stage"
+              : null;
+
+    if (!kind) return;
+
+    const line: EmployeeLogLine = {
+      id: ev.id,
+      at: ev.at,
+      kind,
+      text: ev.summary,
+      taskId: ev.taskId,
+    };
+
+    setActivityByWorker((cur) => {
+      const existing = cur[worker] ?? [];
+      if (existing.some((l) => l.id === line.id)) return cur;
+      return { ...cur, [worker]: [...existing, line].slice(-300) };
+    });
+  }, []);
+
   const handleWsMessage = useCallback((msg: any) => {
     if (msg.type === "event") {
       // Raw system event: keep it out of chat, route to panels by source.
+      const data = msg.data || {};
+      const payload = data.payload || {};
       const ev: SysEvent = {
-        id: msg.data?.event_id || `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        id: data.event_id || `${Date.now()}-${Math.random().toString(36).slice(2)}`,
         at: Date.now(),
-        source: msg.source || msg.data?.source || "system",
-        eventType: msg.event_type || msg.data?.event_type || "",
+        source: msg.source || data.source || "system",
+        eventType: msg.event_type || data.event_type || "",
         summary: msg.summary || (msg.event_type || "").replace(/_/g, " "),
-        correlationId: msg.data?.correlation_id,
+        correlationId: data.correlation_id,
+        worker: msg.worker ?? payload.worker,
+        name: msg.name ?? payload.name,
+        taskId: msg.task_id ?? payload.task_id,
+        stage: msg.stage ?? payload.stage,
+        tool: msg.tool ?? payload.tool,
       };
-      setSysEvents((cur) => [ev, ...cur].slice(0, 200));
+      appendEmployeeActivity(ev);
+
+      // Also surface employee completion/failure in main chat
+      if (ev.eventType === "employee_finished" || ev.eventType === "task_failed") {
+        const name = ev.name || ev.worker || "An employee";
+        const taskId = ev.taskId || "";
+        if (ev.eventType === "task_failed") {
+          const error = payload.error || "unknown error";
+          push("sys", `[SAGE] ${name} failed ${taskId}: ${error}`);
+        } else {
+          const summary = payload.summary || "finished the assigned work";
+          push("sys", `[SAGE] ${name} finished ${taskId} — ${summary}`);
+        }
+      }
       return;
     }
 
@@ -403,7 +391,7 @@ export default function Console() {
     } else if (msg.done) {
       seal("sage");
     }
-  }, [push, append, seal]);
+  }, [push, append, seal, appendEmployeeActivity]);
 
   // Fetch initial info
   useEffect(() => {
@@ -436,26 +424,59 @@ export default function Console() {
     };
   }, []);
 
-  // Worker/task state polling (REST backfill alongside live WS events)
+  // Employee roster polling for the employees panel.
   useEffect(() => {
     let alive = true;
     const load = async () => {
       try {
-        const res = await fetch("/api/tasks", { cache: "no-store" });
-        if (!res.ok) return;
+        const res = await fetch("/api/workers", { cache: "no-store" });
+        if (!res.ok) {
+          console.warn("[employees] roster fetch failed:", res.status);
+          return;
+        }
         const data = await res.json();
-        if (alive && Array.isArray(data.tasks)) setTasks(data.tasks);
-      } catch {
-        /* ignore */
+        if (alive && Array.isArray(data.workers)) {
+          console.log("[employees] roster:", data.workers.map((w: any) => w.name));
+          setEmployees(data.workers);
+        }
+      } catch (e) {
+        console.warn("[employees] roster fetch error:", e);
       }
     };
     load();
-    const id = setInterval(load, 4000);
+    const id = setInterval(load, 3000);
     return () => {
       alive = false;
       clearInterval(id);
     };
   }, []);
+
+  // Poll completion notices when idle (not busy)
+  useEffect(() => {
+    if (busy) return;
+    let alive = true;
+    const pollNotices = async () => {
+      try {
+        const res = await fetch("/api/notices", { cache: "no-store" });
+        if (alive && res.ok) {
+          const data = await res.json();
+          if (data.notices && data.notices.length > 0) {
+            for (const notice of data.notices) {
+              push("sys", `[SAGE] ${notice}`);
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("[notices] poll error:", e);
+      }
+    };
+    pollNotices();
+    const id = setInterval(pollNotices, 3000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [busy, push]);
 
   const handleSendMessage = useCallback(async () => {
     const msg = input.trim();
@@ -662,61 +683,62 @@ export default function Console() {
 
   const showWelcome = lines.length <= 1;
 
-  return (
-    <main className="scanlines vignette relative mx-auto flex h-screen max-w-[1500px] flex-col gap-3 overflow-hidden p-4">
-      <header className="flex items-center justify-between border border-zinc-800 bg-zinc-950 px-4 py-3">
+return (
+    <main className="scanlines vignette relative mx-auto flex min-h-screen max-w-[1500px] flex-col gap-3 p-4 bg-zinc-950">
+      <header className="flex items-center justify-between border border-zinc-800 bg-zinc-950/80 backdrop-blur-sm px-4 py-3">
         <div className="flex items-center gap-3">
-          <span className="grid h-6 w-6 place-items-center bg-zinc-100 text-[12px] font-bold text-black">
+          <span className="grid h-7 w-7 place-items-center bg-zinc-100 text-[13px] font-bold text-black rounded">
             S
           </span>
-          <span className="text-sm font-bold tracking-[0.3em] text-zinc-100">SAGE</span>
-          <span className="hidden text-xs text-zinc-600 sm:inline">:: PERSONAL INTELLIGENCE</span>
+          <span className="text-base font-bold tracking-[0.2em] text-zinc-100">SAGE</span>
+          <span className="hidden text-sm text-zinc-500 sm:inline">:: PERSONAL INTELLIGENCE</span>
         </div>
-        <div className="flex items-center gap-4 text-[11px] text-zinc-500">
-          <span className="hidden md:inline">{shortModel(info.model)}</span>
+        <div className="flex items-center gap-4 text-[12px] text-zinc-400">
+          <span className="hidden md:inline font-mono">{shortModel(info.model)}</span>
           <span className="hidden md:inline">up {fmtElapsed(now - startedAt.current)}</span>
-          <span>{fmtClock(now)}</span>
-          <span className={apiUp ? "text-emerald-500/70" : "text-rose-500/80"}>
-            {apiUp ? "API OK" : "API DOWN"}
+          <span className="font-mono tabular-nums">{fmtClock(now)}</span>
+          <span className={apiUp ? "text-emerald-400" : "text-rose-400"}>
+            {apiUp ? "● API OK" : "● API DOWN"}
           </span>
         </div>
       </header>
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-[1fr_340px] ">
+      <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[1fr_320px] gap-3">
+        {/* Main column: chat + employees */}
         <div className="flex min-h-0 flex-col overflow-hidden">
-          <div className="border border-zinc-800 bg-zinc-950 flex-1 flex flex-col min-h-0 ">
+          <div className="border border-zinc-800 bg-zinc-950 flex flex-col min-h-0 h-[60vh] ">
             <div
               ref={logRef}
-              className="flex-1 overflow-y-scroll px-4 py-3 text-[13px] leading-relaxed "
+              className="flex-1 overflow-y-auto px-5 py-4 text-[14px] leading-relaxed "
             >
               {showWelcome && (
-                <div className="mb-6 border border-zinc-900 bg-black px-4 py-6 text-center">
-                  <span className="mx-auto mb-4 grid h-11 w-11 place-items-center bg-zinc-100 text-lg font-bold text-black">
+                <div className="mb-8 border border-zinc-800 bg-zinc-900/50 px-6 py-8 text-center">
+                  <span className="mx-auto mb-4 grid h-12 w-12 place-items-center bg-zinc-100 text-xl font-bold text-black rounded">
                     S
                   </span>
-                  <h2 className="text-base font-medium tracking-[0.2em] text-zinc-200">SAGE</h2>
-                  <p className="mt-2 text-[12px] text-zinc-600">
+                  <h2 className="text-lg font-medium tracking-[0.1em] text-zinc-100">SAGE</h2>
+                  <p className="mt-3 text-[13px] text-zinc-500 max-w-md mx-auto">
                     Personal intelligence. Ask anything, or describe a goal.
                   </p>
                 </div>
               )}
 
-              <div className="tape overflow-y-scroll space-y-1">
+              <div className="tape space-y-3">
                 {lines.map((line) => (
-                  <div key={line.id} className="flex gap-2">
+                  <div key={line.id} className="flex gap-3 min-w-0">
                     {stamps && (
-                      <span className="w-[74px] shrink-0 select-none text-[10px] leading-[1.9] text-zinc-800">
+                      <span className="w-[78px] shrink-0 select-none text-[11px] leading-[1.8] text-zinc-500 font-mono tabular-nums">
                         {fmtClock(line.at)}
                       </span>
                     )}
                     <span
-                      className={`w-9 shrink-0 select-none text-right text-[11px] leading-[1.9] ${
+                      className={`w-11 shrink-0 select-none text-right text-[11px] leading-[1.8] font-medium ${
                         TONE[line.kind].tag
                       }`}
                     >
                       {TAG[line.kind]}
                     </span>
-                    <span className={`min-w-0 flex-1 ${TONE[line.kind].text} break-words overflow-wrap-anywhere`}>
+                    <span className={`min-w-0 flex-1 break-words overflow-wrap-anywhere ${TONE[line.kind].text}`}>
                       {line.kind === "sage" && line.sealed ? (
                         <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD as any}>
                           {line.text}
@@ -739,50 +761,50 @@ export default function Console() {
                 <ThinkingLine />
               ) : (
                 busy && (
-                  <div className="mt-1 flex gap-2 text-[13px] text-zinc-600">
-                    <span className="w-9 shrink-0 text-right text-[11px] text-zinc-800">sage</span>
-                    <span className="inline-block h-3.5 w-2 animate-blink bg-zinc-400" />
+                  <div className="mt-2 flex gap-3 text-[14px] text-zinc-500">
+                    <span className="w-11 shrink-0 text-right text-[12px] text-zinc-500">sage</span>
+                    <span className="inline-block h-4 w-2.5 animate-blink bg-zinc-400 rounded" />
                   </div>
                 )
               )}
             </div>
 
             {approval && (
-              <div className="border-t border-amber-500/40 bg-amber-500/5 px-4 py-3">
-                <div className="text-[11px] tracking-[0.2em] text-amber-400/80">
+              <div className="border-t border-amber-500/40 bg-amber-500/10 px-5 py-4">
+                <div className="text-[11px] tracking-[0.15em] text-amber-300 uppercase">
                   APPROVAL REQUIRED
                 </div>
-                <div className="mt-1 text-[13px] leading-relaxed text-zinc-200">
+                <div className="mt-2 text-[14px] leading-relaxed text-zinc-100">
                   {approval.description || approval.target}
                 </div>
                 {approval.target && approval.target !== approval.description && (
-                  <pre className="mt-2 overflow-x-auto border border-zinc-800 bg-zinc-950 px-2 py-1.5 text-[12px] text-zinc-300">
+                  <pre className="mt-3 overflow-x-auto border border-zinc-800 bg-zinc-900 px-3 py-2 text-[12px] text-zinc-300 rounded">
                     {approval.target}
                   </pre>
                 )}
-                <div className="mt-2 flex gap-2">
+                <div className="mt-3 flex gap-2">
                   <button
                     type="button"
                     disabled={busy}
                     onClick={() => handleApprove(true)}
-                    className="border border-amber-400/60 px-3 py-1 text-[12px] text-amber-200 hover:bg-amber-400/10 disabled:opacity-50"
+                    className="border border-amber-400/60 px-4 py-1.5 text-[13px] font-medium text-amber-200 hover:bg-amber-400/10 disabled:opacity-50 transition-colors rounded"
                   >
-                    allow once
+                    Allow
                   </button>
                   <button
                     type="button"
                     disabled={busy}
                     onClick={() => handleApprove(false)}
-                    className="border border-zinc-700 px-3 py-1 text-[12px] text-zinc-400 hover:bg-zinc-800 disabled:opacity-50"
+                    className="border border-zinc-700 px-4 py-1.5 text-[13px] font-medium text-zinc-300 hover:bg-zinc-800 disabled:opacity-50 transition-colors rounded"
                   >
-                    decline
+                    Decline
                   </button>
                 </div>
               </div>
             )}
 
-            <div className="composer flex items-start gap-2 border-t border-zinc-800 px-4 py-3">
-              <span className="pt-1.5 text-zinc-500">{">>"}</span>
+            <div className="composer flex items-start gap-3 border-t border-zinc-800 px-5 py-4">
+              <span className="pt-2 text-zinc-500 font-mono text-[13px]">{">>"}</span>
               <textarea
                 ref={inputRef}
                 value={input}
@@ -792,22 +814,28 @@ export default function Console() {
                 disabled={busy}
                 spellCheck={false}
                 placeholder={busy ? "sage is working..." : "talk to sage  ·  enter to send  ·  shift+enter for newline"}
-                className="max-h-40 w-full resize-none bg-transparent py-1.5 text-sm leading-relaxed text-zinc-100 caret-zinc-100 outline-none placeholder:text-zinc-700 disabled:opacity-50"
+                className="max-h-48 w-full resize-none bg-zinc-900/50 py-2.5 px-3 text-base leading-relaxed text-zinc-100 caret-zinc-100 outline-none placeholder:text-zinc-600 disabled:opacity-50 rounded border border-zinc-800 focus:border-zinc-600 focus:ring-1 focus:ring-zinc-600"
               />
               <button
                 type="button"
                 onClick={handleSendMessage}
                 disabled={busy || !input.trim()}
-                className="mt-0.5 shrink-0 border border-zinc-700 px-3 py-1.5 text-[11px] uppercase tracking-[0.2em] text-zinc-200 transition-colors hover:border-zinc-400 disabled:border-zinc-900 disabled:text-zinc-700"
+                className="mt-1 shrink-0 border border-zinc-700 px-4 py-1.5 text-[12px] uppercase tracking-[0.1em] font-medium text-zinc-100 transition-colors hover:border-zinc-400 hover:bg-zinc-800/50 disabled:border-zinc-900 disabled:text-zinc-700 disabled:hover:bg-transparent rounded"
               >
-                {busy ? "..." : "send"}
+                {busy ? "..." : "SEND"}
               </button>
             </div>
           </div>
+
+          {/* Employees panel below chat */}
+          <div className="mt-4 min-h-0">
+            <EmployeePanel employees={employees} activityByWorker={activityByWorker} />
+          </div>
         </div>
 
-        <div className="flex min-h-0 flex-col gap-3 overflow-y-auto">
-          <div className="flex min-h-0 flex-col border border-zinc-800 bg-zinc-950">
+        {/* Right sidebar: session stats */}
+        <aside className="hidden lg:flex flex-col gap-3">
+          <div className="border border-zinc-800 bg-zinc-950">
             <div className="border-b border-zinc-800 px-4 py-2 text-sm font-medium text-zinc-300">
               session
             </div>
@@ -849,13 +877,11 @@ export default function Console() {
               </div>
             </div>
           </div>
-
-          <WorkerPanel tasks={tasks} events={sysEvents} />
-        </div>
+        </aside>
       </div>
 
-      <footer className="flex items-center justify-between border border-zinc-800 bg-zinc-950 px-4 py-2 text-[10px] text-zinc-700">
-        <span>
+      <footer className="flex items-center justify-between border border-zinc-800 bg-zinc-950/80 backdrop-blur-sm px-4 py-2 text-[11px] text-zinc-400">
+        <span className="font-mono">
           {shortModel(info.model)} · {info.transport} · {info.store}
         </span>
         <span>1 channel · {apiUp ? "linked" : "unlinked"}</span>

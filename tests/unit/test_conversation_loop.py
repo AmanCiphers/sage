@@ -156,24 +156,22 @@ async def test_loop_destructive_tool_requests_approval(database):
         database,
         scripted=[
             tool_call_response("delete_everything"),
-            final_response("That action needs your approval."),
         ],
         extra_tools=[dangerous_tool],
     )
 
     response = await loop.handle(UserMessage(content="Delete everything"))
 
-    assert response.content == "That action needs your approval."
+    # Turn ends immediately when approval is needed - no LLM response generated
+    assert response.content == ""
     assert ran == []
     assert response.pending_approval is not None
     assert response.pending_approval["tool_name"] == "delete_everything"
 
+    # Tool was never executed (no result appended to history since turn stopped)
     messages = await message_store.recent(50)
-    tool_result = json.loads(messages[2]["content"])
-
-    assert tool_result["success"] is False
-    assert tool_result["approval_required"] is True
-    assert "approval_id" in tool_result
+    # Should have: user msg, assistant msg with tool_calls
+    assert len(messages) == 2
 
 
 async def test_loop_reports_unknown_tool(database):

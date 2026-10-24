@@ -76,9 +76,16 @@ def test_budget_tracker_enforces_token_ceiling():
 
 
 def test_budget_tracker_enforces_wall_clock():
+    # 0 means unlimited, so should NOT raise
     tracker = BudgetTracker(budget=Budget(max_wall_seconds=0))
+    tracker.check_time()  # Should not raise
+    
+    # But a positive limit should enforce
+    tracker2 = BudgetTracker(budget=Budget(max_wall_seconds=0.001))  # 1ms
+    import time
+    time.sleep(0.01)
     with pytest.raises(BudgetExceeded) as exc:
-        tracker.check_time()
+        tracker2.check_time()
     assert exc.value.kind == "wall_clock"
 
 
@@ -211,8 +218,8 @@ async def test_activity_lists_worker_assignments(database):
 
 
 async def test_budget_breach_reports_failed_honestly(database):
-    # Wall-clock ceiling of 0s → the first check breaches it, honestly.
-    budget = Budget(max_iterations=0, max_tokens=0, max_wall_seconds=0)
+    # Use a tiny wall-clock limit to force immediate breach
+    budget = Budget(max_iterations=0, max_tokens=0, max_wall_seconds=0.001)  # 1ms
     supervisor = build_supervisor(
         database,
         scripted=[InferenceResponse(model="fake", content="never")],

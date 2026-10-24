@@ -1,5 +1,6 @@
 .env
 
+/brag
 
 .venv/
 __pycache__/

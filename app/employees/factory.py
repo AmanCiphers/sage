@@ -22,6 +22,7 @@ from app.config import settings
 from app.context.builder import ContextBuilder
 from app.context.compressor import ContextCompressor
 from app.conversation.loop import ConversationLoop
+from app.embeddings import EmbeddingStore, create_primary_provider
 from app.employees.budgets import Budget
 from app.employees.employee import Employee
 from app.employees.roster import EmployeeSpec
@@ -104,7 +105,18 @@ async def build_employee(
     await database.connect()
     await initialize_schema(database)
 
-    message_store = MessageStore(database)
+    emp_embedding_provider = create_primary_provider()
+    emp_embedding_store = (
+        EmbeddingStore(database, emp_embedding_provider)
+        if emp_embedding_provider
+        else None
+    )
+
+    message_store = MessageStore(
+        database,
+        embedding_provider=emp_embedding_provider,
+        embedding_store=emp_embedding_store,
+    )
     session_state = SessionStateStore(database)
     memory_store = MemoryStore(root / "memory.md")
 
@@ -122,6 +134,7 @@ async def build_employee(
     )
 
     role_card = _load_role_card(spec.key)
+
     context_builder = ContextBuilder(
         message_store=message_store,
         session_state=session_state,
@@ -129,6 +142,8 @@ async def build_employee(
         system_prompt=role_card,
         history_fetch_limit=settings.history_fetch_limit,
         memory_store=memory_store,
+        embedding_store=emp_embedding_store,
+        embedding_provider=emp_embedding_provider,
     )
 
     assignment_budget = budget or Budget()
@@ -160,6 +175,7 @@ async def build_employee(
         budget=assignment_budget,
     )
     employee._database = database
+    employee._embedding_provider = emp_embedding_provider
     return employee
 
 
@@ -167,3 +183,7 @@ async def close_employee(employee: Employee) -> None:
     database = getattr(employee, "_database", None)
     if database is not None:
         await database.close()
+
+    emb_provider = getattr(employee, "_embedding_provider", None)
+    if emb_provider:
+        await emb_provider.close()

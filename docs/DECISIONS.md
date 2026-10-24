@@ -564,3 +564,53 @@ mindless subprocess with something that can actually pursue an objective.
 **Open (deferred):** the second rung of the hard-block list (an LLM verifier),
 per-employee tool allowlists layered on `employee_eligible`, and the UI
 roster/activity panel (Phase 9, API already exposed at `/api/workers*`).
+
+---
+
+## Phase 13 — Agent Backends for Employees
+
+### D29 — Employees invoke external agents (OpenCode, Hermes) via tools
+
+**Decision:**
+- Employees get `run_opencode` and `run_hermes` tools (`employee_eligible=True`,
+  `requires_approval=True`). These wrap the respective CLIs:
+  - `opencode run --continue` / `--session <id>` / `--model` / `--dir`
+  - `hermes chat -Q --format stream-json --continue` / `--resume <id>` / `--model` / `--in <dir>`
+- **Session continuity**: Each employee tracks sessions in `agent_sessions` table.
+  New workspace → new session; same workspace → resume via stored external session ID.
+- **SAGE cancellation**: `cancel_task` tool (SAGE-only, not employee_eligible) lets
+  SAGE terminate any running background task. Replaces wall-clock timeout.
+
+**Why:** Employees were limited to local file/shell tools. Real coding needs a
+  proper agent (OpenCode); research/analysis needs Hermes. The CLI approach
+  avoids reimplementing agent loops and leverages existing tooling. Session
+  tracking enables "continue where you left off" across assignments.
+
+### D30 — Unlimited employee budgets; SAGE intervenes via cancellation
+
+**Decision:**
+- `employee_max_wall_seconds` default: `0.0` (unlimited). Iterations and tokens
+  already unlimited (0). The only runaway guard is now SAGE's explicit
+  `cancel_task`.
+- `BudgetTracker` in `app/employees/budgets.py` no longer enforces wall-clock
+  by default (0 = unlimited). Wall-clock check only triggers if explicitly set.
+
+**Why:** OpenCode tasks can legitimately take 20-30 minutes on complex
+  refactoring. A 10-minute hard timeout was killing valid work. SAGE (the
+  manager) should decide when to intervene, not a timer. The `cancel_task`
+  tool gives SAGE that control.
+
+### D31 — Agent session persistence in SQLite
+
+**Decision:**
+- New table `agent_sessions` tracks: `session_id` (internal), `employee_key`,
+  `backend` (opencode/hermes), `workspace_path`, `objective`, `external_session_id`,
+  `status`, timestamps.
+- `AgentSessionManager.get_or_create_session()` resumes existing session for
+  same employee+backend+workspace if active; else creates new.
+- On completion, `external_session_id` updated from agent output for future resume.
+
+**Why:** Both OpenCode and Hermes support session resume via CLI flags.
+  Without tracking, every employee task would start fresh, losing context.
+  The table is per-employee (each has their own `sage.db`), so sessions
+  are naturally isolated.

@@ -117,13 +117,12 @@ user <-------- SAGE narrates results <--- EventBus (employee_* / task_* events)
   consent. SAGE stays the approval authority: consent prompts created
   during an assignment route back through SAGE's normal approval flow.
 - **Budgets** bound every assignment: `max_iterations`, `max_tokens`,
-  `max_wall_seconds`, plus cancellation. By default **iterations and tokens
-  are unlimited** (tool calls are cheap; an employee may pursue an objective
-  until done) and only **wall-clock** guards against a runaway. Any ceiling
-  set to `0`/`None` means unlimited. A breach ends the assignment honestly as
-  `failed` (or `unknown` when the outcome is indeterminate). Settings:
+  `max_wall_seconds`, plus cancellation. By default **iterations, tokens,
+  and wall-clock are all unlimited** (0 = unlimited). Tool calls are cheap;
+  an employee may pursue an objective until done. SAGE intervenes via
+  `cancel_task` if an assignment runs too long. Settings:
   `SAGE_EMPLOYEE_MAX_ITERATIONS`, `SAGE_EMPLOYEE_MAX_TOKENS`,
-  `SAGE_EMPLOYEE_MAX_WALL_SECONDS`.
+  `SAGE_EMPLOYEE_MAX_WALL_SECONDS` (all default 0).
 - **Honest statuses** (ArchitectureV2 §12): `failed` = definitely failed;
   `unknown` = outcome cannot be determined (budget breach mid-action,
   cancel). On startup, leftover `queued`/`running` assignments from a
@@ -135,6 +134,24 @@ user <-------- SAGE narrates results <--- EventBus (employee_* / task_* events)
   distinct from `unknown`, which means the outcome itself is indeterminate.
 - **Employees never talk to the user**: they report to SAGE, which
   narrates. SAGE is the single point of contact.
+
+### Agent backends: OpenCode & Hermes
+
+Employees can invoke external agents for substantial work:
+
+- **`run_opencode`** — For coding tasks (multi-file edits, refactoring, implementation).
+  Uses OpenCode CLI: `opencode run --continue` (resume last), `--session <id>` (resume specific),
+  `--model`, `--dir`. Employee-eligible, requires approval.
+- **`run_hermes`** — For research, analysis, writing, general tasks.
+  Uses Hermes CLI: `hermes chat -Q --format stream-json --continue` / `--resume <id>` / `--model` / `--in <dir>`.
+  Employee-eligible, requires approval.
+
+**Session continuity**: Each employee tracks agent sessions in `agent_sessions` table
+(per-employee DB). New workspace → new session; same workspace → resume via stored
+external session ID. This enables "continue where you left off" across assignments.
+
+**Cancellation**: SAGE can terminate any running task via `cancel_task` (SAGE-only tool).
+No hard wall-clock timeout — SAGE decides when to intervene (OpenCode can take 20-30 min).
 
 ### Verification: results are re-checked, not trusted
 
@@ -220,6 +237,9 @@ So after a restart, the conversation can resume from the database.
   - `session_search` — full-text search over the entire conversation history
   - `assign_task`, `task_status` — background execution: hand an
     objective to a named employee (see "Staying free")
+  - `run_opencode` — invoke OpenCode for coding tasks (employee_eligible, requires approval)
+  - `run_hermes` — invoke Hermes for research/analysis (employee_eligible, requires approval)
+  - `cancel_task` — terminate a running background task (SAGE-only, not employee_eligible)
 - Handlers may be sync or async; the `ExecutionEngine` awaits async handlers.
 
 ## Long-term memory
@@ -315,12 +335,16 @@ errors, so streaming output and the spinner stay uncluttered.
 | `MAX_ITERATIONS` | 8 | Loop iteration cap per turn (SAGE's own turn) |
 | `EMPLOYEE_MAX_ITERATIONS` | 0 (unlimited) | Employee assignment iteration cap |
 | `EMPLOYEE_MAX_TOKENS` | 0 (unlimited) | Employee assignment token cap |
-| `EMPLOYEE_MAX_WALL_SECONDS` | 600 | Employee assignment wall-clock cap (the runaway guard) |
+| `EMPLOYEE_MAX_WALL_SECONDS` | 0 (unlimited) | Employee assignment wall-clock cap (no default runaway guard) |
 | `CONTEXT_WINDOW_TOKENS` | 32000 | Assumed context window for compaction |
 | `COMPACTION_THRESHOLD_RATIO` | 0.5 | Compact when prompt reaches this fraction |
 | `HISTORY_FETCH_LIMIT` | 400 | Max raw messages fetched per turn |
 | `MAX_TOOL_RESULT_CHARS` | 8000 | Truncation cap for tool output fed to the LLM |
 | `SAGE_WORKSPACE` | `data/workspace` | Root for relative file-tool paths |
+| `SAGE_OPENCODE_PATH` | `opencode` | Path to OpenCode CLI |
+| `SAGE_HERMES_PATH` | `hermes` | Path to Hermes CLI |
+| `SAGE_OPENCODE_DEFAULT_MODEL` | `openai/gpt-4` | Default model for OpenCode |
+| `SAGE_HERMES_DEFAULT_MODEL` | `openai/gpt-4` | Default model for Hermes |
 
 ## Database tables
 
@@ -332,6 +356,7 @@ errors, so streaming output and the spinner stay uncluttered.
 | `tasks` | Durable background task records (status, result, error) |
 | `approvals` | Bound, expiring user consent for side-effecting actions |
 | `operations` | Side-effect execution log (EXECUTING/SUCCEEDED/FAILED/UNKNOWN) |
+| `agent_sessions` | Employee agent backend sessions (opencode/hermes) |
 
 Plus `data/memory.md` — the bounded long-term memory file.
 
@@ -340,6 +365,12 @@ Plus `data/memory.md` — the bounded long-term memory file.
 ```
 app/
 ├── application.py          # wiring / composition root
+├── agents/                 # external agent backends (opencode, hermes)
+│   ├── interface.py        # AgentBackend abstract base
+│   ├── opencode.py         # OpenCode CLI wrapper
+│   ├── hermes.py           # Hermes CLI wrapper
+│   ├── factory.py          # backend creation
+│   └── sessions.py         # session tracking (AgentSessionManager)
 ├── conversation/
 │   ├── loop.py             # the agentic loop
 │   ├── system_prompt.py
@@ -371,5 +402,5 @@ app/
 ├── permissions/
 │   ├── engine.py           # deterministic permission engine + policy
 │   └── approvals.py        # bound, expiring user consent
-└── tools/                  # registry + builtin tools (files, memory, search, tasks)
+└── tools/                  # registry + builtin tools (files, memory, search, tasks, agents)
 ```

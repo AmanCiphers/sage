@@ -33,6 +33,7 @@ def get_current_date() -> str:
 class AssignTaskInput(ToolInput):
     worker: str
     objective: str
+    auto_select: bool = False
 
 
 class TaskStatusInput(ToolInput):
@@ -67,6 +68,23 @@ class EnableRuleInput(ToolInput):
 
 class RemoveRuleInput(ToolInput):
     rule_id: str
+
+
+class CancelTaskInput(ToolInput):
+    task_id: str
+    reason: str = "Cancelled by SAGE"
+
+
+class RunOpenCodeInput(ToolInput):
+    objective: str
+    model: str | None = None
+    session_id: str | None = None
+
+
+class RunHermesInput(ToolInput):
+    objective: str
+    model: str | None = None
+    session_id: str | None = None
 
 
 class AddProactiveRuleInput(ToolInput):
@@ -161,6 +179,146 @@ def _enable_disable_requires_approval(arguments: dict) -> bool:
     return False
 
 
+def _agent_requires_approval(arguments: dict) -> bool:
+    """Agent backends - no approval needed."""
+    return False
+
+
+async def run_opencode(
+    objective: str,
+    model: str | None = None,
+    session_id: str | None = None,
+) -> str:
+    """Run OpenCode to execute a coding task."""
+    from app.agents.factory import get_opencode_backend
+    from app.agents.sessions import AgentSessionManager
+    from app.config import settings
+    from app.persistence.database import Database
+    from app.tools.workspace import current_workspace
+
+    workspace = str(current_workspace())
+    backend = get_opencode_backend(workspace)
+    await backend.start()
+
+    # Get or create session
+    db_path = settings.database_path.parent / "employees" / "charlie" / "sage.db"
+    # TODO: Get employee key from context - for now use charlie as coder
+    db = Database(db_path)
+    await db.connect()
+    session_mgr = AgentSessionManager(db)
+
+    session = await session_mgr.get_or_create_session(
+        employee_key="charlie",
+        backend="opencode",
+        workspace_path=workspace,
+        objective=objective,
+        external_session_id=session_id,
+    )
+
+    from app.agents.interface import AgentTask
+    task = AgentTask(
+        objective=objective,
+        workspace=workspace,
+        model=model,
+        session_id=session.external_session_id,
+    )
+    result = await backend.run_task(task)
+
+    # Update session with external session ID and completion
+    if result.session_id:
+        await session_mgr.complete_session(
+            session.session_id,
+            status="completed" if result.success else "failed",
+            external_session_id=result.session_id,
+        )
+
+    await db.close()
+
+    return json.dumps({
+        "success": result.success,
+        "output": result.output,
+        "error": result.error,
+        "session_id": result.session_id,
+        "duration_seconds": result.duration_seconds,
+    })
+
+
+async def run_hermes(
+    objective: str,
+    model: str | None = None,
+    session_id: str | None = None,
+) -> str:
+    """Run Hermes to execute a general-purpose task."""
+    from app.agents.factory import get_hermes_backend
+    from app.agents.sessions import AgentSessionManager
+    from app.config import settings
+    from app.persistence.database import Database
+    from app.tools.workspace import current_workspace
+
+    workspace = str(current_workspace())
+    backend = get_hermes_backend(workspace)
+    await backend.start()
+
+    # Get or create session - determine employee from context
+    # For now, use a default employee key
+    db_path = settings.database_path.parent / "employees" / "alpha" / "sage.db"
+    db = Database(db_path)
+    await db.connect()
+    session_mgr = AgentSessionManager(db)
+
+    session = await session_mgr.get_or_create_session(
+        employee_key="alpha",
+        backend="hermes",
+        workspace_path=workspace,
+        objective=objective,
+        external_session_id=session_id,
+    )
+
+    from app.agents.interface import AgentTask
+    task = AgentTask(
+        objective=objective,
+        workspace=workspace,
+        model=model,
+        session_id=session.external_session_id,
+    )
+    result = await backend.run_task(task)
+
+    if result.session_id:
+        await session_mgr.complete_session(
+            session.session_id,
+            status="completed" if result.success else "failed",
+            external_session_id=result.session_id,
+        )
+
+    await db.close()
+
+    return json.dumps({
+        "success": result.success,
+        "output": result.output,
+        "error": result.error,
+        "session_id": result.session_id,
+        "duration_seconds": result.duration_seconds,
+    })
+
+
+async def cancel_task(
+    task_id: str,
+    reason: str = "Cancelled by SAGE",
+) -> str:
+    """Cancel a running background task. SAGE-only tool."""
+    from app.application import get_sage_app
+
+    app = get_sage_app()
+    if not app:
+        return json.dumps({"success": False, "error": "SAGE not initialized"})
+
+    try:
+        await app.supervisor.cancel_task(task_id, reason)
+        return json.dumps({"success": True, "task_id": task_id, "reason": reason})
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
+
+
 def register_builtin_tools(registry, supervisor=None) -> None:
     registry.register(
         ToolDefinition(
@@ -204,11 +362,67 @@ def register_builtin_tools(registry, supervisor=None) -> None:
         )
     )
 
+    # Agent backend tools (employee-eligible for background execution)
+    # Registered regardless of supervisor - available to employees
+    registry.register(
+        ToolDefinition(
+            name="run_opencode",
+            description=(
+                "Run OpenCode to execute a coding task in the current workspace. "
+                "Use for writing, modifying, or analyzing code. "
+                "Supports session continuation via session_id. "
+                "Employee-eligible — employees can run this in the background."
+            ),
+            classification=ToolClassification.EXTERNAL_SIDE_EFFECT,
+            input_schema=RunOpenCodeInput,
+            destructive=False,
+            employee_eligible=True,
+            requires_approval=_agent_requires_approval,
+            handler=run_opencode,
+        )
+    )
+
+    registry.register(
+        ToolDefinition(
+            name="run_hermes",
+            description=(
+                "Run Hermes to execute a general-purpose task in the current workspace. "
+                "Use for research, analysis, writing, or any non-coding task. "
+                "Supports session continuation via session_id. "
+                "Employee-eligible — employees can run this in the background."
+            ),
+            classification=ToolClassification.EXTERNAL_SIDE_EFFECT,
+            input_schema=RunHermesInput,
+            destructive=False,
+            employee_eligible=True,
+            requires_approval=_agent_requires_approval,
+            handler=run_hermes,
+        )
+    )
+
+    # SAGE-only: cancel a running background task
+    registry.register(
+        ToolDefinition(
+            name="cancel_task",
+            description=(
+                "Cancel a running background task assigned to an employee. "
+                "SAGE-only tool — not available to employees."
+            ),
+            classification=ToolClassification.LOCAL_MUTATION,
+            input_schema=CancelTaskInput,
+            destructive=True,
+            employee_eligible=False,
+            handler=cancel_task,
+        )
+    )
+
     if supervisor is None:
         return
 
-    async def assign_task(worker: str, objective: str) -> str:
+    async def assign_task(worker: str, objective: str, auto_select: bool = False) -> str:
         """Assign an objective to a named employee; returns a task_id."""
+        if auto_select or worker.lower() == "auto":
+            return await supervisor.assign_auto(objective)
         return await supervisor.assign(
             worker=worker,
             objective=objective,
@@ -379,7 +593,6 @@ def register_builtin_tools(registry, supervisor=None) -> None:
             handler=None,  # Set by application after proactive init
         )
     )
-
 
 
     # These will be set by the application after supervisor is created

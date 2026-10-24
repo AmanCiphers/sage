@@ -5,12 +5,13 @@ Exposes REST + SSE + WebSocket endpoints for the Next.js frontend.
 """
 
 import asyncio
+import contextlib
 import json
 import sys
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -20,7 +21,6 @@ sys.path.insert(0, "/Users/aman/sage-v2")
 
 from app.application import SAGEApplication
 from app.conversation.models import AssistantResponse, LoopEvent, UserMessage
-from app.events.bus import EventBus
 from app.events.models import Event
 from app.observability.logging import get_logger
 
@@ -77,15 +77,30 @@ class ConnectionManager:
         """Forward a raw system event plus a clean human summary.
 
         Panels filter by ``source`` (worker/scheduler/proactive/task) and show
-        the short ``summary`` — never the full payload.
+        the short ``summary`` — never the full payload. We also lift the
+        employee identity (worker/name/task_id) and stage/tool to the top
+        level so the UI can group activity per employee without parsing the
+        whole payload.
         """
+        p = event.payload or {}
         msg = {
             "type": "event",
             "source": event.source,
             "event_type": event.event_type,
             "summary": self._summarize(event),
+            "worker": p.get("worker"),
+            "name": p.get("name"),
+            "task_id": p.get("task_id"),
+            "stage": p.get("stage"),
+            "tool": p.get("tool"),
             "data": event.to_dict(),
         }
+        logger.debug(
+            "ws_forward",
+            event_type=event.event_type,
+            worker=p.get("worker"),
+            summary=msg["summary"],
+        )
         await self.broadcast(msg)
 
     @staticmethod
@@ -108,7 +123,9 @@ class ConnectionManager:
         if et == "worker_completed":
             return f"worker finished · {p.get('worker_id', p.get('task_id', '?'))}"
         if et == "worker_failed":
-            return f"worker failed · {p.get('worker_id', p.get('task_id', '?'))} · {p.get('error', '')}".rstrip(" ·")
+            wid = p.get("worker_id", p.get("task_id", "?"))
+            err = p.get("error", "")
+            return f"worker failed · {wid} · {err}".rstrip(" ·")
         if et == "approval_requested":
             return f"approval requested · {p.get('tool_name', '')}".rstrip(" ·")
         if et == "approval_granted":
@@ -131,29 +148,31 @@ class ConnectionManager:
         if et == "worker_log":
             return str(p.get("message", p.get("log", "")))[:160]
         if et == "employee_assigned":
-            return f"assigned to {p.get('name', p.get('worker', '?'))} · {p.get('objective', '')}".rstrip(" ·")
+            return f"assigned: {p.get('objective', '')}".rstrip(": ")
         if et == "employee_activity":
             stage = p.get("stage", "")
-            if stage == "tool_start" and p.get("tool"):
-                return f"{p.get('name', '?')} · tool {p['tool']}"
-            return f"{p.get('name', '?')} · {stage.replace('_', ' ')}".rstrip(" ·")
+            tool = p.get("tool")
+            if stage == "llm_start":
+                return "thinking…"
+            if stage == "tool_start" and tool:
+                return f"using {tool}"
+            if stage == "tool_end" and tool:
+                return f"finished {tool}"
+            return stage.replace("_", " ") or "working"
         if et == "employee_finished":
-            return f"{p.get('name', p.get('worker', '?'))} finished"
+            return "finished the assigned work"
         return et.replace("_", " ")
 
     async def stop(self):
         if self._broadcast_task:
             self._broadcast_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._broadcast_task
-            except asyncio.CancelledError:
-                pass
 
     async def enqueue_system_event(self, event: Event):
-        try:
+        logger.debug("ws_enqueue", event_type=event.event_type, source=event.source)
+        with contextlib.suppress(asyncio.QueueFull):
             self._system_event_queue.put_nowait(event)
-        except asyncio.QueueFull:
-            pass
 
 
 manager = ConnectionManager()
@@ -211,9 +230,19 @@ async def health():
 @app.get("/api/info")
 async def info():
     if not sage_app:
-        return {"model": "unknown", "transport": "unknown", "runtime": "unknown", "store": "unknown", "endpoint": "unknown"}
+        return {
+            "model": "unknown",
+            "transport": "unknown",
+            "runtime": "unknown",
+            "store": "unknown",
+            "endpoint": "unknown",
+        }
     router = sage_app.conversation_engine.inference_manager.router
-    primary = router.route(__import__("app.inference.models", fromlist=["ModelRequirements"]).ModelRequirements(tool_calling=True))
+    primary = router.route(
+        __import__("app.inference.models", fromlist=["ModelRequirements"]).ModelRequirements(
+            tool_calling=True
+        )
+    )
     return {
         "model": primary.metadata.model_id,
         "transport": "fastapi + websocket",
@@ -227,7 +256,9 @@ async def info():
 async def chat(request: ChatRequest):
     if not sage_app:
         return {"error": "SAGE not initialized"}
-    response: AssistantResponse = await sage_app.conversation_engine.handle(UserMessage(content=request.message))
+    response: AssistantResponse = await sage_app.conversation_engine.handle(
+        UserMessage(content=request.message)
+    )
     return {
         "content": response.content,
         "pending_approval": response.pending_approval,
@@ -241,7 +272,10 @@ async def chat(request: ChatRequest):
 @app.post("/api/chat/stream")
 async def chat_stream(request: ChatRequest):
     if not sage_app:
-        return StreamingResponse(iter(["data: {\"error\": \"SAGE not initialized\"}\n\n"]), media_type="text/event-stream")
+        return StreamingResponse(
+            iter(["data: {\"error\": \"SAGE not initialized\"}\n\n"]),
+            media_type="text/event-stream",
+        )
 
     # Queues for streaming
     delta_queue: asyncio.Queue[str | None] = asyncio.Queue()
@@ -259,11 +293,20 @@ async def chat_stream(request: ChatRequest):
             msg = {"notice": "compaction"}
         elif event.type == "tool_start":
             import json as json_lib
-            msg = {"stage": "tool", "name": event.tool_name, "arguments": json_lib.dumps(event.arguments) if event.arguments else ""}
+
+            args = json_lib.dumps(event.arguments) if event.arguments else ""
+            msg = {"stage": "tool", "name": event.tool_name, "arguments": args}
         elif event.type == "tool_end":
             msg = {"tool": event.tool_name, "ok": event.success, "summary": event.error or ""}
         elif event.type == "approval":
-            msg = {"approval": {"id": event.approval_id, "description": f"Run {event.tool_name}", "target": event.resource, "worker_task_id": None}}
+            msg = {
+                "approval": {
+                    "id": event.approval_id,
+                    "description": f"Run {event.tool_name}",
+                    "target": event.resource,
+                    "worker_task_id": None,
+                }
+            }
         else:
             return
         await loop_event_queue.put(msg)
@@ -339,8 +382,8 @@ async def approve_approval(approval_id: str):
         response: AssistantResponse = await sage_app.approve_pending(approval_id)
         return {"response": response.content, "status": "ok"}
     except Exception as e:
-        logger.exception("approve_failed", approval_id=approval_id, error=str(e))
-        return {"error": f"Approval failed: {str(e)}", "status": "failed"}
+        logger.exception("approve_failed", approval_id=approval_id, error=e)
+        return {"error": f"Approval failed: {e!s}", "status": "failed"}
 
 
 @app.post("/api/approvals/{approval_id}/deny")
@@ -351,8 +394,8 @@ async def deny_approval(approval_id: str):
         response: AssistantResponse = await sage_app.deny_pending(approval_id)
         return {"response": response.content, "status": "ok"}
     except Exception as e:
-        logger.exception("deny_failed", approval_id=approval_id, error=str(e))
-        return {"error": f"Denial failed: {str(e)}", "status": "failed"}
+        logger.exception("deny_failed", approval_id=approval_id, error=e)
+        return {"error": f"Denial failed: {e!s}", "status": "failed"}
 
 
 @app.get("/api/scheduler/rules")
@@ -360,7 +403,21 @@ async def list_scheduler_rules():
     if not sage_app or not sage_app.proactive:
         return {"rules": []}
     rules = await sage_app.proactive.list_rules()
-    return {"rules": [{"rule_id": r.rule_id, "name": r.name, "description": r.description, "trigger": r.trigger_event_type, "action": r.action_event_type, "enabled": r.enabled, "cooldown": r.cooldown_seconds, "fire_count": r.fire_count} for r in rules]}
+    return {
+        "rules": [
+            {
+                "rule_id": r.rule_id,
+                "name": r.name,
+                "description": r.description,
+                "trigger": r.trigger_event_type,
+                "action": r.action_event_type,
+                "enabled": r.enabled,
+                "cooldown": r.cooldown_seconds,
+                "fire_count": r.fire_count,
+            }
+            for r in rules
+        ]
+    }
 
 
 @app.get("/api/proactive/rules")

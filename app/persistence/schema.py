@@ -62,6 +62,30 @@ CREATE TABLE IF NOT EXISTS operations (
     updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS agent_sessions (
+    session_id       TEXT PRIMARY KEY,
+    employee_key     TEXT NOT NULL,
+    backend          TEXT NOT NULL,
+    workspace_path   TEXT NOT NULL,
+    objective        TEXT NOT NULL,
+    external_session_id TEXT,
+    status           TEXT NOT NULL DEFAULT 'active',
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at     TEXT
+);
+
+CREATE TABLE IF NOT EXISTS message_embeddings (
+    message_id   TEXT PRIMARY KEY,
+    embedding    BLOB NOT NULL,
+    model        TEXT NOT NULL,
+    dim          INTEGER NOT NULL,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_message_embeddings_model
+ON message_embeddings(model);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
 USING fts5(content, role UNINDEXED);
 """

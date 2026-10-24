@@ -4,16 +4,37 @@ Messages are append-only raw history (ArchitectureV2 §30): compaction only
 changes what the LLM sees, never what is stored.
 """
 
+import asyncio
 import json
+import re
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.persistence.database import Database
 
+if TYPE_CHECKING:
+    from app.embeddings import EmbeddingProvider, EmbeddingStore
+
+# FTS5 special characters that need escaping
+_FTS5_SPECIAL = re.compile(r'([\+\-\*\(\)~:<>@/\\"\'])')
+
+
+def _escape_fts5(query: str) -> str:
+    """Escape FTS5 special characters to avoid syntax errors."""
+    # Wrap in quotes and escape internal quotes
+    return '"' + _FTS5_SPECIAL.sub(r'\\\1', query) + '"'
+
 
 class MessageStore:
-    def __init__(self, database: Database) -> None:
+    def __init__(
+        self,
+        database: Database,
+        embedding_provider: "EmbeddingProvider | None" = None,
+        embedding_store: "EmbeddingStore | None" = None,
+    ) -> None:
         self.database = database
+        self.embedding_provider = embedding_provider
+        self.embedding_store = embedding_store
 
     async def append_user(self, content: str, api_content: str | None = None) -> int:
         return await self._append("user", content, api_content=api_content)
@@ -66,6 +87,8 @@ class MessageStore:
 
     async def search(self, query: str, limit: int = 5) -> list[dict]:
         """FTS5 search over the permanent raw history."""
+        # Escape FTS5 special characters to avoid syntax errors
+        escaped_query = _escape_fts5(query)
 
         cursor = await self.database.execute(
             """
@@ -76,7 +99,7 @@ class MessageStore:
             ORDER BY rank
             LIMIT ?
             """,
-            (query, limit),
+            (escaped_query, limit),
         )
         rows = await cursor.fetchall()
 
@@ -105,13 +128,36 @@ class MessageStore:
             (role, content, tool_calls_json, tool_call_id, api_content),
         )
 
+        msg_id = cursor.lastrowid
+
         await self.database.execute(
             "INSERT INTO messages_fts (rowid, content, role) VALUES (?, ?, ?)",
-            (cursor.lastrowid, content or "", role),
+            (msg_id, content or "", role),
         )
 
         await self.database.commit()
-        return cursor.lastrowid
+
+        if not hasattr(self, "_embedding_tasks"):
+            self._embedding_tasks = set()
+
+        if content and content.strip() and self.embedding_provider and self.embedding_store:
+            task = asyncio.create_task(self._generate_embedding(msg_id, content))
+            self._embedding_tasks.add(task)
+            task.add_done_callback(self._embedding_tasks.discard)
+
+        return msg_id
+
+    async def _generate_embedding(self, msg_id: int, content: str) -> None:
+        """Generate and store embedding for a message (fire-and-forget)."""
+        try:
+            # Use passage type for documents
+            embedding = await self.embedding_provider.embed_passage(content)
+            await self.embedding_store.save(str(msg_id), embedding)
+        except Exception as e:
+            # Log but don't fail the message append
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning("embedding_generation_failed msg_id=%s error=%s", msg_id, e)
 
 
 class SessionStateStore:
@@ -327,6 +373,7 @@ class TaskStore:
                     "worker": row[3],
                     "arguments": json.loads(row[4]),
                     "status": row[5],
+                    "result": row[6],
                     "error": row[7],
                     "verification": row[8],
                     "verification_detail": row[9],

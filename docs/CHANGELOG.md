@@ -170,6 +170,27 @@ Changes from the web-UI integration work that were **not** recorded in
 - **Files:** `pyproject.toml`
 - **Why:** Required by the FastAPI web backend (`web/backend.py`).
 
+## A10 — Employee completion notifications on Web UI  *(2026-10-22)*
+
+- **Area:** Web UI / Events
+- **Change:** `Console.tsx` now polls `/api/notices` every 3s when idle and handles `employee_finished`/`task_failed` WebSocket events, pushing completion notices to the main chat feed.
+- **Files:** `web/src/components/Console.tsx`, `web/backend.py` (existing `/api/notices` endpoint)
+- **Why:** Previously, employee completion only updated the Worker panel via WebSocket and the CLI; the main web chat never showed "Asta finished task_123" unless you manually checked the panel. Now SAGE announces completions in-chat automatically.
+
+## A11 — Agent backends: OpenCode & Hermes integration  *(2026-10-22)*
+
+- **Area:** Employees / Tooling
+- **Change:** Added `run_opencode` and `run_hermes` tools (employee_eligible=True, requires approval). Employees can now invoke external agent CLIs for coding and general tasks. Session continuity via `--continue`/`--session` (OpenCode) and `--continue`/`--resume` (Hermes). Added `cancel_task` (SAGE-only) to terminate runaway tasks.
+- **Files:** `app/agents/interface.py`, `app/agents/opencode.py`, `app/agents/hermes.py`, `app/agents/factory.py`, `app/agents/sessions.py`, `app/tools/builtin.py`, `app/employees/roles/*.md`, `app/config.py`, `app/persistence/schema.py`
+- **Why:** Employees previously only had local tools (read, write, shell). Real coding tasks need a proper agent. OpenCode excels at multi-file edits; Hermes at research. Session tracking in `agent_sessions` table enables resume.
+
+## A12 — Unlimited employee budgets + SAGE cancellation  *(2026-10-22)*
+
+- **Area:** Employees / Permissions
+- **Change:** `employee_max_wall_seconds` default changed from 600s → 0 (unlimited). Wall-clock budget removed as runaway guard; SAGE now uses `cancel_task` to intervene when an employee runs too long (OpenCode can take 20-30 min on complex tasks).
+- **Files:** `app/config.py`, `app/tools/builtin.py` (`cancel_task`), `app/employees/supervisor.py` (`cancel_task`)
+- **Why:** Hard timeouts were killing legitimate long-running coding tasks. SAGE-as-manager should decide when to intervene, not a timer.
+
 ---
 
 # Part B — Proposed: Employee Workers
