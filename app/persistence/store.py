@@ -21,8 +21,12 @@ _FTS5_SPECIAL = re.compile(r'([\+\-\*\(\)~:<>@/\\"\'])')
 
 def _escape_fts5(query: str) -> str:
     """Escape FTS5 special characters to avoid syntax errors."""
-    # Wrap in quotes and escape internal quotes
-    return '"' + _FTS5_SPECIAL.sub(r'\\\1', query) + '"'
+    # Escape all FTS5 special chars, then wrap in quotes for phrase search
+    # This handles edge cases like backslashes in paths
+    escaped = _FTS5_SPECIAL.sub(r'\\\1', query)
+    # Also escape any remaining unescaped backslashes
+    escaped = escaped.replace('\\', '\\\\')
+    return '"' + escaped + '"'
 
 
 class MessageStore:
@@ -90,18 +94,38 @@ class MessageStore:
         # Escape FTS5 special characters to avoid syntax errors
         escaped_query = _escape_fts5(query)
 
-        cursor = await self.database.execute(
-            """
-            SELECT m.id, m.role, m.content
-            FROM messages_fts f
-            JOIN messages m ON m.id = f.rowid
-            WHERE messages_fts MATCH ?
-            ORDER BY rank
-            LIMIT ?
-            """,
-            (escaped_query, limit),
-        )
-        rows = await cursor.fetchall()
+        try:
+            cursor = await self.database.execute(
+                """
+                SELECT m.id, m.role, m.content
+                FROM messages_fts f
+                JOIN messages m ON m.id = f.rowid
+                WHERE messages_fts MATCH ?
+                ORDER BY rank
+                LIMIT ?
+                """,
+                (escaped_query, limit),
+            )
+            rows = await cursor.fetchall()
+        except Exception:
+            # Fallback: try a simpler query without phrase matching
+            try:
+                simple_query = query.replace('"', '').replace('\\', '')[:100]
+                cursor = await self.database.execute(
+                    """
+                    SELECT m.id, m.role, m.content
+                    FROM messages_fts f
+                    JOIN messages m ON m.id = f.rowid
+                    WHERE messages_fts MATCH ?
+                    ORDER BY rank
+                    LIMIT ?
+                    """,
+                    (simple_query, limit),
+                )
+                rows = await cursor.fetchall()
+            except Exception:
+                # Give up on FTS5, return empty
+                return []
 
         return [
             {

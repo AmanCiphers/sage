@@ -240,6 +240,17 @@ Changes from the web-UI integration work that were **not** recorded in
 - **Files:** `app/conversation/tools.md`, `app/employees/factory.py`, `tests/unit/test_employees.py`
 - **Why:** Employees had role cards saying "use run_opencode" but no tool usage guide in their system prompt. They couldn't make informed tool choices. Now they get the same tool guidance as SAGE.
 
+## A17 — Per-employee log files + tool usage visibility  *(2026-10-24)*
+
+- **Area:** Employees / Observability
+- **Change:**
+  - Each employee now has its own log file at `data/employees/<key>/sage.log` with DEBUG-level logging
+  - Added detailed logging in `Employee.work()`: LLM iterations, tool starts/ends with arguments, completion summary
+  - `run_opencode` and `run_hermes` now log "SAGE is using OpenCode/Hermes via employee X" or "SAGE is using OpenCode/Hermes directly" for visibility
+  - Fixed FTS5 search syntax errors with improved escaping and fallback query
+- **Files:** `app/employees/factory.py`, `app/employees/employee.py`, `app/tools/builtin.py`, `app/persistence/store.py`
+- **Why:** No visibility into what employees were actually doing. "Completed" status with empty result was misleading. Per-employee logs + tool usage logs make debugging and verification straightforward.
+
 ---
 
 # Part B — Proposed: Employee Workers

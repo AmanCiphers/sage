@@ -642,3 +642,39 @@ roster/activity panel (Phase 9, API already exposed at `/api/workers*`).
 - `AgentSessionManager` already tracked sessions per employee + backend + workspace — now correctly used
 
 **Why:** Previously all employees shared Charlie's OpenCode sessions and Alpha's Hermes sessions. Now Charlie resumes Charlie's sessions, Alpha resumes Alpha's. Session continuity (`--continue`, `--session`) works per-employee per-workspace as designed.
+
+---
+
+## Phase 15 — Observability & Employee Tool Visibility
+
+### D34 — Per-employee log files for debugging and verification
+
+**Decision:**
+- Each employee gets a dedicated log file: `data/employees/<key>/sage.log`
+- Logger created in `build_employee()` via `_setup_employee_logger(key)`
+- Logs at DEBUG level: LLM iteration starts, tool calls with arguments, tool results, completion summary
+- Logger handlers closed properly in `close_employee()`
+
+**Why:** The "completed" status with empty result was a recurring issue — no visibility into what the employee actually did. Per-employee logs make it possible to:
+- Verify the employee actually called the intended tools (e.g., `run_opencode`)
+- Debug why a task failed or completed unexpectedly
+- Correlate with SAGE's main log for full picture
+
+### D35 — Tool usage logging for agent backends (thinking messages)
+
+**Decision:**
+- `run_opencode` and `run_hermes` log at INFO level when invoked:
+  - "SAGE is using OpenCode via employee charlie: <objective>" (employee invocation)
+  - "SAGE is using OpenCode directly: <objective>" (SAGE direct invocation)
+- Uses `sage.tools` logger namespace
+
+**Why:** When SAGE or an employee invokes an agent backend, the operation can take 30+ seconds with no user-facing feedback. The log message serves as a "thinking" indicator equivalent to what users see in the CLI/Web UI.
+
+### D36 — FTS5 search robustness
+
+**Decision:**
+- Improved `_escape_fts5()` to double-escape backslashes
+- Added try/except fallback in `MessageStore.search()` that retries with a simplified query if FTS5 syntax error occurs
+- Returns empty list instead of crashing on malformed queries
+
+**Why:** FTS5 syntax errors on backslashes (common in file paths) were causing warnings and failed RAG retrieval. The fix makes search resilient without changing the schema.

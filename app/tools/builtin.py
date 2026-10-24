@@ -191,6 +191,8 @@ async def run_opencode(
     session_id: str | None = None,
 ) -> str:
     """Run OpenCode to execute a coding task."""
+    import logging
+
     from app.agents.factory import get_opencode_backend
     from app.agents.sessions import AgentSessionManager
     from app.config import settings
@@ -199,6 +201,14 @@ async def run_opencode(
 
     workspace = str(current_workspace())
     employee_key = current_employee_key() or "charlie"
+
+    # Emit "thinking" log for user visibility
+    logger = logging.getLogger("sage.tools")
+    if employee_key and current_employee_key():
+        logger.info("SAGE is using OpenCode via employee %s: %s", employee_key, objective[:100])
+    else:
+        logger.info("SAGE is using OpenCode directly: %s", objective[:100])
+
     backend = get_opencode_backend(workspace)
     await backend.start()
 
@@ -250,6 +260,8 @@ async def run_hermes(
     session_id: str | None = None,
 ) -> str:
     """Run Hermes to execute a general-purpose task."""
+    import logging
+
     from app.agents.factory import get_hermes_backend
     from app.agents.sessions import AgentSessionManager
     from app.config import settings
@@ -258,6 +270,14 @@ async def run_hermes(
 
     workspace = str(current_workspace())
     employee_key = current_employee_key() or "alpha"
+
+    # Emit "thinking" log for user visibility
+    logger = logging.getLogger("sage.tools")
+    if employee_key and current_employee_key():
+        logger.info("SAGE is using Hermes via employee %s: %s", employee_key, objective[:100])
+    else:
+        logger.info("SAGE is using Hermes directly: %s", objective[:100])
+
     backend = get_hermes_backend(workspace)
     await backend.start()
 

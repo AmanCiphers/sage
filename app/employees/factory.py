@@ -6,6 +6,7 @@ Each employee gets its **own** world:
         sage.db        — its own messages / session / tasks
         memory.md      — its own curated facts
         workspace/     — its own cwd for file & shell tools
+        sage.log       — its own log file
 
 The filtered tool registry is the existing SAGE registry, restricted to
 tools marked `employee_eligible`. The employee reuses the same
@@ -38,8 +39,6 @@ from app.persistence.database import Database
 from app.persistence.schema import initialize_schema
 from app.persistence.store import MessageStore, SessionStateStore
 from app.tools.registry import ToolRegistry
-
-logger = logging.getLogger(__name__)
 
 ROLE_CARDS_DIR = Path(__file__).parent / "roles"
 
@@ -87,6 +86,29 @@ def _load_tools_guide() -> str:
     return ""
 
 
+def _setup_employee_logger(key: str) -> logging.Logger:
+    """Create a per-employee logger with its own file handler."""
+    log_path = employee_root(key) / "sage.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    logger = logging.getLogger(f"sage.employee.{key}")
+    logger.setLevel(logging.DEBUG)
+
+    # Avoid duplicate handlers if called multiple times
+    if not logger.handlers:
+        handler = logging.FileHandler(log_path)
+        handler.setLevel(logging.DEBUG)
+        formatter = logging.Formatter(
+            "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S"
+        )
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+        logger.propagate = False  # Don't bubble up to root logger
+
+    return logger
+
+
 async def build_employee(
     worker: str | EmployeeSpec,
     *,
@@ -108,6 +130,10 @@ async def build_employee(
     root = employee_root(spec.key)
     workspace = root / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
+
+    # Set up per-employee logger
+    emp_logger = _setup_employee_logger(spec.key)
+    emp_logger.info("employee_initialized key=%s workspace=%s", spec.key, workspace)
 
     database = Database(root / "sage.db")
     await database.connect()
@@ -186,6 +212,7 @@ async def build_employee(
     )
     employee._database = database
     employee._embedding_provider = emp_embedding_provider
+    employee._logger = emp_logger
     return employee
 
 
@@ -197,3 +224,10 @@ async def close_employee(employee: Employee) -> None:
     emb_provider = getattr(employee, "_embedding_provider", None)
     if emb_provider:
         await emb_provider.close()
+
+    # Close logger handlers
+    emp_logger = getattr(employee, "_logger", None)
+    if emp_logger:
+        for handler in emp_logger.handlers[:]:
+            handler.close()
+            emp_logger.removeHandler(handler)

@@ -70,6 +70,11 @@ class Employee:
     ) -> EmployeeResult:
         """Run one objective to completion under the assignment budget."""
 
+        # Use per-employee logger if available, fall back to module logger
+        emp_logger = getattr(self, "_logger", logger)
+
+        emp_logger.info("employee_work_started employee=%s objective=%s", self.spec.key, objective)
+
         tracker = BudgetTracker(budget=self.budget)
 
         async def _bridge(event: LoopEvent) -> None:
@@ -77,7 +82,7 @@ class Employee:
                 try:
                     await on_progress(event)
                 except Exception:
-                    logger.debug("employee progress callback failed", exc_info=True)
+                    emp_logger.debug("employee_progress_callback_failed", exc_info=True)
 
         # Count iterations as they start (the loop emits llm_start per turn).
         self.loop.on_event = _bridge
@@ -98,14 +103,24 @@ class Employee:
             async def _guarded(event: LoopEvent) -> None:
                 if event.type == "llm_start":
                     tracker.start_iteration()
-                elif (
-                    event.type == "tool_end"
-                    and event.success
-                    and event.tool_name
-                    and self._is_side_effecting(event.tool_name)
-                    and event.tool_name not in side_effects
-                ):
-                    side_effects.append(event.tool_name)
+                    emp_logger.debug("llm_iteration_start iteration=%s", tracker.iterations)
+                elif event.type == "tool_start" and event.tool_name:
+                    args = getattr(event, "arguments", None)
+                    emp_logger.info("tool_start tool=%s args=%s", event.tool_name, args)
+                elif event.type == "tool_end" and event.tool_name:
+                    err = getattr(event, "error", None)
+                    emp_logger.info(
+                        "tool_end tool=%s success=%s error=%s",
+                        event.tool_name,
+                        event.success,
+                        err,
+                    )
+                    if (
+                        event.success
+                        and self._is_side_effecting(event.tool_name)
+                        and event.tool_name not in side_effects
+                    ):
+                        side_effects.append(event.tool_name)
                 await _bridge(event)
 
             self.loop.on_event = _guarded
@@ -114,12 +129,21 @@ class Employee:
 
             if side_effects:
                 verification = "self-verified"
-                detail = "employee ran side-effecting tool(s): " + ", ".join(
-                    side_effects
-                )
+                detail = "employee ran side-effecting tool(s): " + ", ".join(side_effects)
             else:
                 verification = "unverified"
                 detail = "employee result (no side-effecting tool observed)"
+
+            emp_logger.info(
+                "employee_work_completed employee=%s success=%s verification=%s "
+                "iterations=%s tokens=%s elapsed=%.2f",
+                self.spec.key,
+                True,
+                verification,
+                tracker.iterations,
+                tracker.tokens,
+                tracker.elapsed,
+            )
 
             return EmployeeResult(
                 success=True,
@@ -132,7 +156,7 @@ class Employee:
             )
 
         except BudgetExceeded as exc:
-            logger.warning(
+            emp_logger.warning(
                 "employee_budget_exceeded employee=%s kind=%s detail=%s",
                 self.spec.key,
                 exc.kind,
@@ -146,7 +170,7 @@ class Employee:
                 elapsed_seconds=tracker.elapsed,
             )
         except Exception as exc:
-            logger.exception("employee_failed employee=%s", self.spec.key)
+            emp_logger.exception("employee_failed employee=%s", self.spec.key)
             return EmployeeResult(
                 success=False,
                 error=str(exc),
