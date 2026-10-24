@@ -300,6 +300,16 @@ Changes from the web-UI integration work that were **not** recorded in
 - **Files:** `app/tools/investigation.py` (new), `app/tools/builtin.py`, `app/tools/file_tools.py`, `app/tools/memory_tools.py`, `app/tools/session_search.py`, `app/employees/factory.py`, `app/employees/supervisor.py`, `app/conversation/loop.py`, `app/conversation/tools.md`, `app/conversation/authority.md`, `app/employees/roles/*.md`, `app/config.py`, `app/application.py`, `app/inference/fake.py`, tests
 - **Why:** SAGE had no grep/glob/web/browse tools (OpenCode had them all), employees were given a uniform toolset (not role-fit), and SAGE burned ~1177k tokens in a `task_status` poll runaway. These changes fix all three: investigation capability, role-fit tooling, and the poll loop.
 
+## A22 — Docs-maintenance mandate + memory-architecture doc sync  *(2026-10-24)*
+
+- **Area:** Docs / Tooling
+- **Change:**
+  - Added **`AGENTS.md`** at the repo root instructing every agent that works on this repository to update `docs/CHANGELOG.md` (and `docs/DECISIONS.md` for architectural decisions) as part of finishing any change.
+  - Recorded D37–D40 in `docs/DECISIONS.md` (await_task/anti-poll, investigation & web tools, per-role allowlists, docs mandate).
+  - **Memory-architecture reality sync** (from a source-vs-docs audit): `docs/ArchitectureV2.md` §30 (Current State), §31 (provenance), §32 (evolution), §33 (forgetting) are **planned, not built**; and `docs/DECISIONS.md` D14's "no embeddings" is **stale** — hybrid RAG (FTS5 + embeddings) is live. (Full memory upgrade deferred to a later session.)
+- **Files:** `AGENTS.md` (new), `docs/CHANGELOG.md`, `docs/DECISIONS.md`, `docs/ArchitectureV2.md`
+- **Why:** Several design docs diverged from the running system (D14 said no embeddings; §30–33 memory features are unimplemented). A persistent AGENTS.md reminder prevents future staleness and keeps the decision log authoritative.
+
 ---
 
 # Part B — Proposed: Employee Workers

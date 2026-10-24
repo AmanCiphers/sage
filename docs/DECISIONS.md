@@ -678,3 +678,41 @@ roster/activity panel (Phase 9, API already exposed at `/api/workers*`).
 - Returns empty list instead of crashing on malformed queries
 
 **Why:** FTS5 syntax errors on backslashes (common in file paths) were causing warnings and failed RAG retrieval. The fix makes search resilient without changing the schema.
+
+---
+
+## Phase 16 — Anti-poll, investigation & web tools, per-role employee tooling
+
+### D37 — `await_task` + anti-poll circuit breaker (runaway fix)
+
+**Decision:**
+- Added `Supervisor.await_task(task_id, timeout)` which awaits the in-flight asyncio task (or polls the durable store as a fallback) and returns the terminal status — without an LLM round-trip per check.
+- Exposed as the `await_task` tool (SAGE-only).
+- `ConversationLoop` now tracks consecutive identical `task_status` calls per task_id; after 2 with no state change, it injects guidance telling the model to use `await_task` or end the turn.
+
+**Why:** SAGE burned ~1177k input tokens in a single turn calling `task_status` ~45 times while waiting for a slow employee (reasoning model + Hermes). Each poll is a full LLM round-trip. Prompting alone wasn't enough (authority.md already said "you're notified automatically") — a deterministic circuit breaker plus an async wait tool is the robust fix.
+
+### D38 — Investigation tools (grep/glob) and web/browse tools
+
+**Decision:**
+- Added `app/tools/investigation.py` with ripgrep-backed `grep` and `glob` (regex/literal, path/include scoping, case control, limit, timeout) modeled on OpenCode's tooling.
+- Upgraded `list_files` (recursive + limit) and `read_file` (1-based line-number prefixing).
+- Added `web_search` (uses Tavily if `SAGE_TAVILY_API_KEY` set, else free Bing RSS — no CAPTCHA) and `browse_url` (fetch page → text).
+- All are `READ_ONLY`, bounded by limits and timeouts so a pathological search can't hang a turn.
+
+**Why:** SAGE had no grep/glob/web/browse capability, forcing `run_command` workarounds. OpenCode's investigation model (ripgrep + bounded, structured output) is proven; SAGE now matches it.
+
+### D39 — Per-role employee tool allowlists + employee memory/session_search
+
+**Decision:**
+- `factory._filter_registry(source, key)` now enforces a per-role allowlist instead of giving every employee the same 8-tool set. Charlie gets coding tools (run_opencode/run_command/patch/write_file); Alpha/Asta get research/survey tools; Otto gets write tools; Tony gets read/verify tools. All share the common investigation set (grep/glob/read/list/session_search/web/browse/analyze/memory).
+- `session_search` is now `employee_eligible=True` (per-employee DBs are isolated, so safe).
+- The `memory` tool now resolves the current employee's `memory.md` via `current_employee_key()` context, so employees can actually use their (previously orphaned) memory.
+
+**Why:** Uniform tool exposure made employees see tools irrelevant to their role and under-use their real capabilities. Enforced allowlists + a working employee memory/session_search let each role operate at full potential.
+
+### D40 — Docs maintenance mandate (AGENTS.md)
+
+**Decision:** Added `AGENTS.md` at the repo root instructing every agent working on this repository to update `docs/CHANGELOG.md` (and `docs/DECISIONS.md` for architectural decisions) as part of completing any change.
+
+**Why:** The repo depends on accurate, current docs (DECISIONS/HOW_IT_WORKS/ArchitectureV2). Several docs went stale (e.g. D14's "no embeddings", §31–33 unimplemented memory features). A persistent instruction ensures each agent records what it changed.

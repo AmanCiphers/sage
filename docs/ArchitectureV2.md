@@ -1020,6 +1020,9 @@ DENIED_BY_TOOL_POLICY
 
 # 30. Memory Architecture
 
+> **Status: PARTIALLY BUILT.** Raw History and Long-Term Memory are implemented.
+> **Current State is NOT yet built** (planned). See the source audit below.
+
 SAGE memory consists of:
 
 ```text
@@ -1065,6 +1068,9 @@ It is not simply "the last 24 hours."
 
 # 31. Memory Provenance
 
+> **Status: PLANNED, NOT BUILT.** The current `MemoryStore` (a bounded
+> markdown file) has no per-fact provenance. This section is the target design.
+
 Every extracted memory records provenance.
 
 Example:
@@ -1089,6 +1095,10 @@ High-impact uncertain information should require confirmation before being treat
 ---
 
 # 32. Memory Evolution
+
+> **Status: PLANNED, NOT BUILT.** The current `MemoryStore` only dedupes
+> exact facts; it does not SUPERSEDE contradictory ones. This section is the
+> target design.
 
 If the user says:
 
@@ -1118,6 +1128,9 @@ Original conversation history remains unchanged.
 
 # 33. Forgetting
 
+> **Status: PARTIALLY BUILT.** `memory remove`/`clear` exist, but there is no
+> formal FORGOTTEN status or audit trail. This section is the target design.
+
 When the user asks SAGE to forget something:
 
 ```text
@@ -1135,6 +1148,10 @@ The audit record contains only the memory identifier and operation metadata nece
 ---
 
 # 34. Context Engine
+
+> **Status: BUILT (hybrid).** Retrieval uses SQLite FTS5 **and** embeddings
+> (hybrid RAG, 40/60 weighted). Note: `docs/DECISIONS.md` D14 originally said
+> "no embeddings" — that is now stale; embeddings are live.
 
 Every meaningful LLM call goes through the Context Engine.
 
