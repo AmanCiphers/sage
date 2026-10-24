@@ -337,6 +337,13 @@ Changes from the web-UI integration work that were **not** recorded in
 - **Files:** `app/notifications/completion.py`, `main.py`
 - **Why:** The scheduler correctly fired and persisted the reminder event, but nothing surfaced it to the user — the notifier only watched employee-finished events, and the CLI blocked on `input()`. Reminders now appear live while the user is idle.
 
+## A26 — Fix CLI stdin handling (single reader thread)  *(2026-10-24)*
+
+- **Area:** CLI
+- **Change:** Replaced the per-line `asyncio.wait_for(asyncio.to_thread(input, ...))` pattern with a **single persistent stdin reader thread** that pushes lines onto an asyncio queue. The main loop consumes the queue with a 1s timeout so background notices (completions, reminders) surface while idle.
+- **Files:** `main.py`
+- **Why:** The previous approach leaked a blocked thread on every 1s timeout; that thread `input()` would steal the user's typed line, so nothing the user typed was processed. A single long-lived reader thread fixes it — typed input reliably reaches the loop.
+
 ---
 
 # Part B — Proposed: Employee Workers

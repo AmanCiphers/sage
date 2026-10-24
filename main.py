@@ -1,5 +1,6 @@
 import asyncio
 import re
+import threading
 
 from app.application import SAGEApplication
 from app.cli import CliRenderer
@@ -216,28 +217,35 @@ async def main() -> None:
 
         return None
 
+    # Single persistent stdin reader thread. It pushes each typed line onto
+    # an asyncio queue; we consume from the queue with a timeout so background
+    # notices (completions, reminders) surface while idle. Using one long-lived
+    # thread (instead of to_thread + wait_for per line) avoids leaking threads
+    # that would steal the user's input.
+    input_queue: asyncio.Queue[str] = asyncio.Queue()
+
+    def _read_stdin() -> None:
+        try:
+            for line in iter(input, ""):
+                input_queue.put_nowait(line)
+        except (EOFError, KeyboardInterrupt):
+            pass
+
+    reader_thread = threading.Thread(target=_read_stdin, daemon=True)
+    reader_thread.start()
+
     try:
         while True:
-            # Wait for user input with a short timeout, so we can drain
-            # background notices (employee completions, reminders) while the
-            # user is idle rather than only after they type something.
+            # Wait briefly for a typed line so we can also surface background
+            # notices (employee completions, reminders) while the user is idle.
             try:
-                user_input = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        input,
-                        renderer.style.bold(renderer.style.cyan("You: ")),
-                    ),
-                    timeout=1.0,
-                )
+                user_input = await asyncio.wait_for(input_queue.get(), timeout=1.0)
             except TimeoutError:
                 # No input this cycle — surface any pending notices, then keep
                 # waiting for input.
                 for notice in app.completion_notifier.drain():
                     renderer.note(f"\n[SAGE] {notice}")
                 continue
-            except (EOFError, KeyboardInterrupt):
-                print()
-                break
 
             # Safe boundary: SAGE is idle here (no response streaming), so
             # any employee-completion notices can be shown without cutting
