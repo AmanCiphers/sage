@@ -1,5 +1,6 @@
 import asyncio
 import re
+import sys
 import threading
 
 from app.application import SAGEApplication
@@ -224,9 +225,14 @@ async def main() -> None:
     # that would steal the user's input.
     input_queue: asyncio.Queue[str] = asyncio.Queue()
 
+    prompt = renderer.style.bold(renderer.style.cyan("You: "))
+
     def _read_stdin() -> None:
         try:
-            for line in iter(input, ""):
+            while True:
+                sys.stdout.write(prompt)
+                sys.stdout.flush()
+                line = input()
                 input_queue.put_nowait(line)
         except (EOFError, KeyboardInterrupt):
             pass

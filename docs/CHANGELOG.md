@@ -344,6 +344,16 @@ Changes from the web-UI integration work that were **not** recorded in
 - **Files:** `main.py`
 - **Why:** The previous approach leaked a blocked thread on every 1s timeout; that thread `input()` would steal the user's typed line, so nothing the user typed was processed. A single long-lived reader thread fixes it — typed input reliably reaches the loop.
 
+## A27 — Fix CLI prompt + `run_at` timezone shadowing  *(2026-10-24)*
+
+- **Area:** CLI / Scheduler
+- **Change:**
+  - **CLI prompt restored**: the stdin reader thread now prints the "You: " prompt before each read (previously `iter(input, "")` called `input()` with no prompt, so the prompt never showed).
+  - **`run_at` bug fixed**: `SchedulerEngine.add_job` used `timezone.utc`, but the `timezone` parameter (a string) shadowed the `timezone` module, raising `AttributeError: 'str' object has no attribute 'utc'` for any one-time `run_at` job. Now uses `UTC`.
+  - **Steered toward `run_at`**: `schedule_job` description now tells SAGE to use `run_at` for one-time reminders (not date-specific cron, which fires every year and confuses users after the time passes).
+- **Files:** `main.py`, `app/scheduler/engine.py`, `app/tools/builtin.py`, `tests/unit/test_scheduler_timezone.py`
+- **Why:** The CLI "You:" prompt disappeared when the reader thread switched to `iter(input, "")`; and one-time `run_at` reminders crashed due to module shadowing. Both fixed. (Note: the "2027" next_run SAGE reported was correct cron behavior for a date-specific cron — steer one-time reminders to `run_at`.)
+
 ---
 
 # Part B — Proposed: Employee Workers

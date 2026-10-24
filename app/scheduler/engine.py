@@ -180,7 +180,7 @@ class SchedulerEngine:
                 dt = datetime.fromisoformat(run_at.replace("Z", "+00:00"))
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=_tz_for(timezone))
-                next_run_utc = dt.astimezone(timezone.utc)
+                next_run_utc = dt.astimezone(UTC)
                 cron_expr = run_at  # stored for reference / list display
             except Exception as exc:
                 raise ValueError(f"Invalid run_at datetime: {exc}")  # noqa: B904

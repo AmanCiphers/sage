@@ -545,12 +545,17 @@ def register_builtin_tools(registry, supervisor=None) -> None:
         ToolDefinition(
             name="schedule_job",
             description=(
-                "Create a scheduled job that publishes an event. Provide "
-                "`cron_expression` for recurring jobs (e.g. '0 9 * * *' = "
-                "daily 09:00) OR `run_at` for a one-time job at an absolute "
-                "ISO datetime (e.g. '2026-10-25T09:00:00+05:30', or a UTC "
-                "string with a Z). `run_at` supports sub-minute precision. "
-                "The cron expression is interpreted in `timezone` (IANA name, "
+                "Create a scheduled job that publishes an event. "
+                "For a ONE-TIME reminder at a specific time (including 'in a "
+                "few seconds/minutes from now'), ALWAYS use `run_at` with an "
+                "absolute ISO datetime (e.g. '2026-10-25T09:00:00+05:30' or a "
+                "UTC string ending in Z). Do NOT build a date-specific cron "
+                "for a one-time reminder — a cron like '0 9 24 10 *' fires "
+                "every Oct 24 each year and rolls to next year once the time "
+                "passes, which confuses users. "
+                "Use `cron_expression` only for truly recurring jobs "
+                "(e.g. '0 9 * * *' = daily 09:00). "
+                "The cron/run_at is interpreted in `timezone` (IANA name, "
                 "e.g. 'Asia/Kolkata'); if omitted, the configured default SAGE "
                 "timezone is used (IST)."
             ),

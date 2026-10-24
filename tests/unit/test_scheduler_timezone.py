@@ -27,3 +27,37 @@ def test_iso_utc_formats_with_z():
 def test_tz_for_unknown_falls_back_to_utc():
     tz = _tz_for("Not/AZone")
     assert tz == timezone.utc
+
+
+async def test_run_at_one_time_job_uses_utc_and_max_runs_1():
+    """run_at must parse as UTC (not crash on timezone shadowing) and default
+    to max_runs=1 so a one-time reminder fires once then disables."""
+    import tempfile
+    from pathlib import Path
+
+    from app.events.bus import EventBus
+    from app.events.store import EventStore
+    from app.persistence.database import Database
+    from app.persistence.schema import initialize_schema
+    from app.scheduler.engine import SchedulerEngine
+    from app.scheduler.store import SchedulerStore
+
+    db = Database(Path(tempfile.mkdtemp()) / "t.db")
+    await db.connect()
+    await initialize_schema(db)
+    store = SchedulerStore(db)
+    await store.initialize()
+    eng = SchedulerEngine(store, EventBus(EventStore(db)))
+
+    # 22:53 IST on 2026-10-24 == 17:23 UTC.
+    jid = await eng.add_job(
+        name="one-off",
+        cron_expression=None,
+        event_type="reminder",
+        run_at="2026-10-24T22:53:04+05:30",
+        timezone="Asia/Kolkata",
+    )
+    job = await store.get_job(jid)
+    assert job.next_run_at == "2026-10-24T17:23:04Z"
+    assert job.max_runs == 1
+    await db.close()
