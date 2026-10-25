@@ -354,6 +354,17 @@ Changes from the web-UI integration work that were **not** recorded in
 - **Files:** `main.py`, `app/scheduler/engine.py`, `app/tools/builtin.py`, `tests/unit/test_scheduler_timezone.py`
 - **Why:** The CLI "You:" prompt disappeared when the reader thread switched to `iter(input, "")`; and one-time `run_at` reminders crashed due to module shadowing. Both fixed. (Note: the "2027" next_run SAGE reported was correct cron behavior for a date-specific cron — steer one-time reminders to `run_at`.)
 
+## A28 — CLI UI overhaul: cleaner rendering, sections, helpers  *(2026-10-24)*
+
+- **Area:** CLI
+- **Change:**
+  - Rewrote `app/cli.py` with a clean `CliRenderer` surface: styled role prefix (`SAGE:`), a `SAGE: <text>` delta stream, tool-activity lines with adaptive duration formatting (`µs`/`ms`/`s`), and a structured stats footer (elapsed · tool calls · tokens · model).
+  - Added command-output helpers: `section(title)`, `help_menu(rows)`, `tool_list(rows)`, `system_note(text)`, `notice(text)`, `error(text)` — replacing ad-hoc `print` calls in `main.py`.
+  - `main.py` now uses those helpers; added `/jobs` and `/rules` commands; removed a dead `/approvals` block (the `/approvals` toggle is the live one); prompt sourced from `renderer.prompt`.
+  - Removed duplicate/dead code that had accumulated (broken `Style`/method duplicates, undefined helpers).
+- **Files:** `app/cli.py`, `main.py`
+- **Why:** The CLI had grown messy (duplicate methods, broken prompt, ad-hoc prints). This is a focused readability overhaul: consistent section headers, adaptive tool durations, and a single renderer owning all output.
+
 ---
 
 # Part B — Proposed: Employee Workers

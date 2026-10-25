@@ -58,36 +58,33 @@ async def main() -> None:
             return "exit"
 
         if command == "/help":
-            print(
-                "\n".join(
-                    [
-                        renderer.style.dim("commands:"),
-                        "  /help            show this help",
-                        "  /tools           list available tools",
-                        "  /memory          show raw long-term memory",
-                        "  /profile         show structured profile",
-                        "  /search <query>  search conversation history",
-                        "  /yolo            allow all actions without approval (full permission)",
-                        "  /approvals       require approval again (exit full-permission mode)",
-                        "  /exit            quit",
-                    ]
-                )
+            renderer.help_menu(
+                [
+                    ("/help", "show this help"),
+                    ("/tools", "list available tools"),
+                    ("/memory", "show raw long-term memory"),
+                    ("/profile", "show structured profile"),
+                    ("/search <q>", "search conversation history"),
+                    ("/jobs", "list scheduled jobs"),
+                    ("/rules", "list proactive rules"),
+                    ("/yolo", "full permission (no approvals)"),
+                    ("/approvals", "re-enable approval prompts"),
+                    ("/exit", "quit"),
+                ]
             )
 
         elif command == "/tools":
+            rows = []
             for tool in app.tool_registry.list():
                 flags = []
                 if tool.destructive:
                     flags.append("destructive")
                 if tool.requires_approval:
                     flags.append("may need approval")
-                suffix = renderer.style.dim(f" [{', '.join(flags)}]") if flags else ""
-                name = renderer.style.yellow(tool.name)
-                pad = " " * max(0, 28 - len(tool.name))
-                print(
-                    f"  {name}{pad} "
-                    f"{renderer.style.dim(tool.classification.value)}{suffix}"
+                rows.append(
+                    (tool.name, tool.classification.value, ", ".join(flags))
                 )
+            renderer.tool_list(rows)
 
         elif command in {"/memory", "/profile"}:
             content = app.memory_store.load().strip()
@@ -96,40 +93,66 @@ async def main() -> None:
                 return None
 
             if command == "/memory":
-                print(content)
+                renderer.section("Memory")
+                for line in content.splitlines():
+                    print(f"  {line}")
+                print()
                 return None
 
             # /profile — structured view
-            print(renderer.style.bold("Profile: Aman"))
-            print(renderer.style.dim("─" * 40))
+            renderer.section("Profile")
             for line in content.splitlines():
                 line = line.strip()
                 if not line:
                     continue
-                # memory lines look like "- Fact" or "• Fact"
                 fact = line.lstrip("-• ").strip()
                 if ": " in fact:
                     k, v = fact.split(": ", 1)
                     print(f"  {renderer.style.cyan(k)}: {v}")
                 else:
                     print(f"  {fact}")
+            print()
             return None
 
         elif command == "/search":
             if not argument.strip():
-                print(renderer.style.dim("usage: /search <query>"))
+                renderer.system_note("usage: /search <query>")
             else:
                 rows = await app.message_store.search(argument, limit=5)
                 if not rows:
-                    print(renderer.style.dim("no matches"))
+                    renderer.system_note("no matches")
                 for row in rows:
                     content = " ".join(str(row.get("content", "")).split())
                     if len(content) > 160:
                         content = content[:157] + "..."
                     print(
-                        f"  {renderer.style.cyan(str(row.get('role', '?')))} "
+                        f"  {renderer.style.cyan(str(row.get('role', '?')).ljust(10))} "
                         f"{content}"
                     )
+
+        elif command == "/jobs":
+            jobs = await app.scheduler.list_jobs()
+            renderer.section("Scheduled Jobs")
+            if not jobs:
+                renderer.system_note("no scheduled jobs")
+            for j in jobs:
+                print(
+                    f"  {renderer.style.bold(j.name)}  {renderer.style.dim(j.job_id)}  "
+                    f"{'✓' if j.enabled else '✗'}  next: {j.next_run_at or '—'}"
+                )
+            print()
+
+        elif command == "/rules":
+            rules = await app.proactive.list_rules()
+            renderer.section("Proactive Rules")
+            if not rules:
+                renderer.system_note("no proactive rules")
+            for r in rules:
+                print(
+                    f"  {renderer.style.bold(r.name)}  {renderer.style.dim(r.rule_id)}  "
+                    f"{'✓' if r.enabled else '✗'}  {r.trigger_event_type} → {r.action_event_type}"
+                )
+            print()
 
         elif command in {"/yolo", "/approvals"}:
             # /yolo = full permission (no approvals); /approvals = back to interactive
@@ -194,15 +217,6 @@ async def main() -> None:
                 app.approval_manager.deny(approval_id, reason)
                 print(renderer.style.green(f"Denied: {approval_id}"))
 
-        elif command == "/approvals":
-            # List pending approvals
-            pending = app.approval_manager.list_pending()
-            if not pending:
-                print(renderer.style.dim("No pending approvals"))
-            else:
-                for p in pending:
-                    print(f"  {p['approval_id']}: {p.get('description', 'unknown')}")
-
         elif command == "/smart":
             # Smart guardian status
             sg = app.smart_guardian
@@ -225,12 +239,10 @@ async def main() -> None:
     # that would steal the user's input.
     input_queue: asyncio.Queue[str] = asyncio.Queue()
 
-    prompt = renderer.style.bold(renderer.style.cyan("You: "))
-
     def _read_stdin() -> None:
         try:
             while True:
-                sys.stdout.write(prompt)
+                sys.stdout.write(renderer.prompt)
                 sys.stdout.flush()
                 line = input()
                 input_queue.put_nowait(line)
@@ -247,17 +259,15 @@ async def main() -> None:
             try:
                 user_input = await asyncio.wait_for(input_queue.get(), timeout=1.0)
             except TimeoutError:
-                # No input this cycle — surface any pending notices, then keep
-                # waiting for input.
                 for notice in app.completion_notifier.drain():
-                    renderer.note(f"\n[SAGE] {notice}")
+                    renderer.notice(f"[SAGE] {notice}")
                 continue
 
             # Safe boundary: SAGE is idle here (no response streaming), so
             # any employee-completion notices can be shown without cutting
             # into a reply.
             for notice in app.completion_notifier.drain():
-                renderer.note(f"\n[SAGE] {notice}")
+                renderer.notice(f"[SAGE] {notice}")
 
             user_input = _ANSI_RE.sub("", user_input).strip()
             if not user_input:
