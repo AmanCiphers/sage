@@ -386,6 +386,17 @@ Changes from the web-UI integration work that were **not** recorded in
 - **Files:** `app/notifications/os.py` (new), `app/tools/builtin.py`, `app/application.py`, `app/config.py`, `app/conversation/tools.md`, `app/conversation/authority.md`, `tests/unit/test_os_notifications.py` (new)
 - **Why:** Users want desktop notifications for scheduled jobs/reminders/proactive actions, plus a way for SAGE to nudge on something important. Auto (silent) for scheduled/proactive + SAGE-initiated (sounding) covers both.
 
+## A31 — TUI approvals + chat area refactor  *(2026-10-25)*
+
+- **Area:** CLI / UI
+- **Change:**
+  - **Approvals now work in the TUI.** Previously the TUI only wrote a passive "✋ approval required" line and never prompted the user. Added a **modal approval dialog** (`ApprovalModal`): shows tool + target, `y` approve / `n`/`esc` deny. `main.py` passes an `approval_callback` that calls `app.approve_pending`/`deny_pending` (same as the ANSI path). The TUI loops while `response.pending_approval`.
+  - **Chat area refactor.** User messages written as `┃ You:` blocks, SAGE replies as `┃ SAGE:`; separator lines between turns; tool/approval activity as compact dim lines. Clear visual separation between messages.
+  - **Side panel** (right column) toggled with **Tab**, showing the current status provider output (active employees / model).
+  - **Thinking animation** uses a cycling spinner task.
+- **Files:** `app/cli_tui.py`, `main.py`
+- **Why:** The TUI couldn't approve actions (a real functional gap — `run_command` approvals went nowhere). The chat area is also more readable with clear message separation and a toggleable status panel.
+
 ---
 
 # Part B — Proposed: Employee Workers

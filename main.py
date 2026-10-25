@@ -43,11 +43,18 @@ async def _run_tui(app: SAGEApplication, models: list[str], workspace: str) -> N
     async def on_submit(message: UserMessage) -> AssistantResponse:
         return await loop.handle_stream(message, tui.on_delta)
 
+    async def approval_callback(approval: dict, approved: bool) -> AssistantResponse:
+        approval_id = approval["approval_id"]
+        if approved:
+            return await app.approve_pending(approval_id, on_delta=tui.on_delta)
+        return await app.deny_pending(approval_id, on_delta=tui.on_delta)
+
     tui = SageTui(
         model_ids=models,
         workspace=workspace,
         on_submit=on_submit,
         completion_notifier=app.completion_notifier,
+        approval_callback=approval_callback,
         status_provider=lambda: _roster_summary(app),
     )
     loop.on_event = tui.sage_on_event

@@ -7,9 +7,11 @@ and application are untouched.
 
 Layout:
   Header   — SAGE · model · workspace
-  Feed     — scrollable conversation (user + SAGE + tool activity)
-  Status   — active employee / pending approvals / time
-  Input    — persistent prompt box with ↑/↓ history
+  Main     — chat feed (message bubbles) + right-side status panel
+  Dock     — live response, thinking indicator, status line, input box
+
+Approvals use a modal dialog; commands and message rendering are handled by
+dedicated widgets so the chat reads cleanly.
 """
 
 from __future__ import annotations
@@ -22,9 +24,72 @@ from typing import ClassVar
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
+from textual.screen import ModalScreen
 from textual.widgets import Footer, Header, Input, RichLog, Static
 
-from app.conversation.models import AssistantResponse, LoopEvent
+from app.conversation.models import AssistantResponse, LoopEvent, UserMessage
+
+_ANSI_RE = __import__("re").compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
+
+
+class ApprovalModal(ModalScreen[bool]):
+    """Modal dialog asking the user to approve or deny a tool action."""
+
+    CSS = """
+    ApprovalModal {
+        align: center middle;
+    }
+    #dialog {
+        width: 60;
+        height: auto;
+        padding: 1 2;
+        border: round $warning;
+        background: $surface;
+    }
+    #dialog-title {
+        color: $warning;
+        text-style: bold;
+    }
+    #dialog-body {
+        margin-top: 1;
+        margin-bottom: 1;
+    }
+    #dialog-hint {
+        color: $text-muted;
+    }
+    """
+
+    def __init__(self, tool_name: str, resource: str | None, description: str = "") -> None:
+        super().__init__()
+        self._tool = tool_name
+        self._resource = resource or "target"
+        self._desc = description
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Static("⚠ Approval Required", id="dialog-title")
+            yield Static(
+                f"Tool: [bold]{self._tool}[/]\n"
+                f"Target: [bold]{self._resource}[/]"
+                + (f"\n{self._desc}" if self._desc else ""),
+                id="dialog-body",
+            )
+            yield Static(
+                "[b]y[/] approve · [b]n[/]/[b]esc[/] deny",
+                id="dialog-hint",
+            )
+
+    def on_key(self, event) -> None:
+        if event.key in ("y", "enter"):
+            self.dismiss(True)
+            event.stop()
+        elif event.key in ("n", "escape"):
+            self.dismiss(False)
+            event.stop()
 
 
 class SageTui(App):
@@ -35,13 +100,37 @@ class SageTui(App):
         width: 100%;
         height: 100%;
     }
-    #feed {
+    #main {
         width: 100%;
         height: 1fr;
+    }
+    #feed {
+        width: 1fr;
+        height: 100%;
         border: round $primary 50%;
-        padding: 0 2;
+        padding: 1 2;
         overflow-y: scroll;
         background: $surface;
+    }
+    #side {
+        width: 32;
+        height: 100%;
+        border: round $accent 50%;
+        padding: 1;
+        margin-left: 1;
+        background: $panel;
+        display: none;
+    }
+    #side.visible {
+        display: block;
+    }
+    #side-title {
+        color: $accent;
+        text-style: bold;
+        margin-bottom: 1;
+    }
+    #side-body {
+        color: $text;
     }
     #dock {
         width: 100%;
@@ -85,6 +174,7 @@ class SageTui(App):
 
     BINDINGS: ClassVar[list[tuple]] = [
         ("ctrl+d", "quit", "Quit"),
+        ("tab", "toggle_side", "Status"),
     ]
 
     def __init__(
@@ -94,12 +184,14 @@ class SageTui(App):
         workspace: str,
         on_submit,
         completion_notifier,
+        approval_callback=None,
         status_provider=None,
     ) -> None:
         super().__init__()
         self._model_ids = model_ids
         self._workspace = workspace
         self._on_submit = on_submit  # async fn(message) -> AssistantResponse
+        self._approval_callback = approval_callback
         self._notifier = completion_notifier
         self._status_provider = status_provider or (lambda: None)
         self._history: list[str] = []
@@ -114,8 +206,11 @@ class SageTui(App):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Vertical(id="layout"):
-            self.feed = RichLog(highlight=True, markup=True, wrap=True)
-            yield self.feed
+            with Horizontal(id="main"):
+                self.feed = RichLog(highlight=True, markup=True, wrap=True)
+                yield self.feed
+                self.side = Static("", id="side")
+                yield self.side
             with Vertical(id="dock"):
                 self._live = Static("", id="live-response")
                 yield self._live
@@ -126,14 +221,17 @@ class SageTui(App):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.feed.write(
-            f"[bold green]SAGE[/] [dim]· {', '.join(self._model_ids) or 'none'}[/]"
-        )
-        self.feed.write(f"[dim]workspace: {self._workspace}[/]")
-        self.feed.write("[dim]type /help in the box, or Ctrl+D to quit[/]")
-        self.feed.write("")
+        self._welcome()
         self._poll_notices()
         self._refresh_status()
+
+    def _welcome(self) -> None:
+        self._sep()
+        self.feed.write(f"[bold green]SAGE[/] [dim]· {', '.join(self._model_ids) or 'none'}[/]")
+        self.feed.write(f"[dim]workspace: {self._workspace}[/]")
+        self.feed.write("[dim]type /help in the box · Tab for status · Ctrl+D to quit[/]")
+        self.feed.write("")
+        self._sep()
 
     # ---- input ----
 
@@ -146,14 +244,13 @@ class SageTui(App):
         self._history.append(message)
         self._history_idx = None
         event.input.value = ""
-        self._write_separator()
-        self.feed.write(f"[bold cyan]┃ You:[/] [bold]{message}[/]")
-        self.feed.write("")
-        # Launch as a Textual worker (pass a coroutine; do NOT also @work-decorate).
+        self._add_user_message(message)
         self.run_worker(self._handle_turn(message), group="turn", exclusive=False)
 
-    def _on_key(self, event) -> None:
-        # ↑/↓ history navigation
+    def on_key(self, event) -> None:
+        # Only take over ↑/↓ when the input box is focused (history nav).
+        if self.focused is None or self.focused.id != "input":
+            return
         if event.key == "up":
             if self._history:
                 self._history_idx = (
@@ -161,8 +258,7 @@ class SageTui(App):
                     if self._history_idx is None
                     else max(0, self._history_idx - 1)
                 )
-                inp = self.query_one("#input", Input)
-                inp.value = self._history[self._history_idx]
+                self.query_one("#input", Input).value = self._history[self._history_idx]
                 event.stop()
         elif event.key == "down" and self._history_idx is not None:
             self._history_idx += 1
@@ -189,14 +285,17 @@ class SageTui(App):
             await self._run_command(message)
             self._busy = False
             self._set_thinking(False)
+            self._refresh_status()
+            self.query_one("#input", Input).focus()
             return
-
-        from app.conversation.models import UserMessage
 
         try:
             response = await self._on_submit(UserMessage(content=message))
+            # Handle any pending approvals the loop surfaced.
+            while response and response.pending_approval:
+                approved = await self._ask_approval(response.pending_approval)
+                response = await self._resolve_approval(response.pending_approval, approved)
             await self.turn_end(response)
-            # Drain notices surfaced during the turn.
             self._drain_notices()
         except Exception as exc:
             self.feed.write(f"[red]✗ error:[/] {exc}")
@@ -206,9 +305,23 @@ class SageTui(App):
             self._refresh_status()
             self.query_one("#input", Input).focus()
 
+    async def _ask_approval(self, approval: dict) -> bool:
+        tool = approval.get("tool_name", "?")
+        resource = approval.get("resource") or approval.get("arguments", {}).get("path")
+        modal = ApprovalModal(tool, resource)
+        decision = await self.push_screen_wait(modal)
+        if decision:
+            self.feed.write(f"  [green]✓ approved[/] {tool}")
+        else:
+            self.feed.write(f"  [dim]✗ denied[/] {tool}")
+        return bool(decision)
+
+    async def _resolve_approval(self, approval: dict, approved: bool) -> AssistantResponse:
+        if self._approval_callback is None:
+            return AssistantResponse(content="")
+        return await self._approval_callback(approval, approved)
+
     async def _run_command(self, message: str) -> None:
-        # Commands are handled by main.py via the injected handler; for the
-        # TUI we support a minimal built-in set and forward the rest.
         cmd, _, _arg = message.partition(" ")
         if cmd in ("/exit", "/quit"):
             self.exit()
@@ -217,9 +330,7 @@ class SageTui(App):
         self._drain_notices()
 
     # ---- loop callback surface (used by main.py to wire the loop) ----
-    # NOTE: do NOT name this `on_event` — Textual's App reserves `on_event`
-    # for its own UI events (mount/unmount/message), so our loop handler must
-    # use a distinct name to avoid the collision that crashed the app.
+    # NOTE: do NOT name this `on_event` — Textual's App reserves `on_event`.
 
     def turn_start(self) -> None:
         self._set_thinking(True)
@@ -255,9 +366,8 @@ class SageTui(App):
 
     async def turn_end(self, response: AssistantResponse) -> None:
         self._set_thinking(False)
-        # Commit the buffered live response to the feed, then clear it.
         if self._live_text:
-            self.feed.write(f"[cyan]┃ SAGE:[/] {self._live_text}")
+            self.feed.write(f"[cyan]SAGE:[/] {self._live_text}")
             self._live_text = ""
             self._live.update("")
         elapsed = time.perf_counter() - getattr(self, "_turn_started", 0.0)
@@ -273,6 +383,17 @@ class SageTui(App):
         self._busy = False
         self._refresh_status()
 
+    # ---- chat rendering ----
+
+    def _add_user_message(self, text: str) -> None:
+        self._sep()
+        self.feed.write(f"[bold cyan]You:[/] {_strip_ansi(text)}")
+        self.feed.write("")
+
+    def _sep(self) -> None:
+        width = max(20, self.size.width - 8)
+        self.feed.write(f"[dim]{'─' * width}[/]")
+
     # ---- helpers ----
 
     @staticmethod
@@ -287,10 +408,6 @@ class SageTui(App):
                 s = str(v)
                 parts.append(f"{k}={s[:40]}{'…' if len(s) > 40 else ''}")
         return ", ".join(parts[:2])
-
-    def _write_separator(self) -> None:
-        width = max(20, self.size.width - 8)
-        self.feed.write(f"[dim]{'─' * width}[/]")
 
     def _set_thinking(self, on: bool) -> None:
         t = self.query_one("#thinking", Static)
@@ -310,7 +427,7 @@ class SageTui(App):
             t = self.query_one("#thinking", Static)
             while True:
                 f = frames[self._think_idx % len(frames)]
-                t.update(f"{self.style(f)} thinking…")
+                t.update(f"[warning]{f}[/] thinking…")
                 self._think_idx += 1
                 await asyncio.sleep(0.1)
 
@@ -320,12 +437,7 @@ class SageTui(App):
         if self._think_task is not None:
             self._think_task.cancel()
             self._think_task = None
-        t = self.query_one("#thinking", Static)
-        t.update("")
-
-    @staticmethod
-    def style(text: str) -> str:
-        return f"[warning]{text}[/]"
+        self.query_one("#thinking", Static).update("")
 
     def _refresh_status(self) -> None:
         status = self.query_one("#status", Static)
@@ -334,6 +446,14 @@ class SageTui(App):
         if extra:
             parts.append(extra)
         status.update(f"[bold]● SAGE[/]  [dim]{' · '.join(parts)}[/]")
+        self._refresh_side()
+
+    def _refresh_side(self) -> None:
+        try:
+            extra = self._status_provider() or ""
+            self.side.update(f"[bold]# status[/]\n\n{extra}")
+        except Exception:
+            pass
 
     @work(thread=False, group="poll")
     async def _poll_notices(self) -> None:
@@ -350,3 +470,6 @@ class SageTui(App):
 
     def action_quit(self) -> None:
         self.exit()
+
+    def action_toggle_side(self) -> None:
+        self.side.set_class(not self.side.has_class("visible"), "visible")
