@@ -102,7 +102,7 @@ def test_extract_tail_keeps_tool_groups_atomic():
     assert messages[2] in tail
 
 
-async def test_compress_produces_summary_row_and_tail(database):
+async def test_compress_produces_protected_head_summary_and_tail(database):
     compressor = build_compressor(
         database,
         scripted=[InferenceResponse(model="fake", content="Summary of work so far.")],
@@ -111,9 +111,14 @@ async def test_compress_produces_summary_row_and_tail(database):
     history = make_history(12)
     compacted = await compressor.compress(history)
 
-    assert compacted[0]["content"].startswith(SUMMARY_PREFIX)
-    assert "Summary of work so far." in compacted[0]["content"]
-    assert compacted[1:] == history[-len(compacted[1:]):]
+    # v2 format: [protected_head, summary_row, protected_tail]
+    # Protected head: first unique roles (user, assistant) = 2 messages
+    assert len(compacted) >= 4  # head(2) + summary(1) + tail(>=1)
+    assert compacted[2]["content"].startswith(SUMMARY_PREFIX)  # summary at index 2 (after 2 head msgs)
+    assert "Summary of work so far." in compacted[2]["content"]
+    # Tail should match end of history
+    tail_start = -(len(compacted) - 3)  # everything after head(2) and summary(1)
+    assert compacted[3:] == history[tail_start:]
 
     state = await compressor.session_state.get()
     assert state["summary"] == "Summary of work so far."
@@ -126,8 +131,9 @@ async def test_compress_uses_fallback_when_llm_fails(database):
     history = make_history(12)
     compacted = await compressor.compress(history)
 
-    assert compacted[0]["content"].startswith(SUMMARY_PREFIX)
-    assert "Recent user requests:" in compacted[0]["content"]
+    # v2 format: [head, summary, tail]
+    assert compacted[2]["content"].startswith(SUMMARY_PREFIX)
+    assert "Recent user requests:" in compacted[2]["content"]
 
 
 async def test_anti_thrash_blocks_after_max_strikes(database):
@@ -142,7 +148,9 @@ async def test_anti_thrash_blocks_after_max_strikes(database):
     compressor.threshold_tokens = 10
     compressor.tail_budget = 40
 
-    history = make_history(6)
+    # Need enough history for: protected_head (2) + middle (several) + protected_tail (4)
+    # So need at least 2 + 4 + 4 = 10 messages to have a middle region
+    history = make_history(15)
 
     for _ in range(MAX_STRIKES):
         await compressor.compress(history)
@@ -167,11 +175,13 @@ async def test_excluded_summary_row_is_not_resummarized(database):
     history = make_history(12)
     first = await compressor.compress(history)
 
-    # New activity arrives after the first compaction; the old summary row
-    # must not be fed back in as conversation content.
+    # v2 format: first = [head, summary_row, tail]
+    # Second compression: new activity arrives after first compaction
+    # The old summary row must not be fed back in as conversation content.
     second = await compressor.compress([*first, *make_history(6)])
 
     state = await compressor.session_state.get()
     assert state["summary"] == "second summary"
-    assert second[0]["content"].startswith(SUMMARY_PREFIX)
-    assert "first summary" not in second[0]["content"]
+    # Second result should have summary at index 2 (after head)
+    assert second[2]["content"].startswith(SUMMARY_PREFIX)
+    assert "first summary" not in second[2]["content"]

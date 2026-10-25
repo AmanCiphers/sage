@@ -1,15 +1,16 @@
 """Context compaction for the forever-running chat.
 
-Adapted from Hermes' context_compressor, simplified:
+Adapted from Hermes' context_compressor, with protected head/tail (v2):
 
     threshold reached
       -> anti-thrash check (2 ineffective strikes block further attempts)
-      -> split history: head is the system prompt, tail is a token-budgeted
-         verbatim window (newest messages, tool pairs kept atomic)
+      -> protected head: first system, first human, first assistant, first tool
+      -> protected tail: last N messages (configurable, default 4)
       -> middle is merged into one iterative summary via a single LLM call
          (previous summary + new middle; never re-summarized from scratch)
+      -> boundary snapping: never split tool_call/tool_result pairs
       -> deterministic fallback summary if the LLM call fails
-      -> new history = summary row + tail
+      -> new history = protected head + summary row + protected tail
 
 Raw history in SQLite is never modified; compaction only changes the view.
 """
@@ -30,6 +31,10 @@ logger = logging.getLogger(__name__)
 
 MAX_STRIKES = 2
 SUMMARY_TARGET_CHARS = 4000
+
+# Protected region configuration
+PROTECTED_HEAD_COUNT = 4  # system, first human, first assistant, first tool
+PROTECTED_TAIL_COUNT = 4  # last N messages
 
 SUMMARY_PREFIX = (
     "[Context summary of earlier conversation. "
@@ -83,7 +88,7 @@ class ContextCompressor:
         self.calibration_ratio = 0.7 * self.calibration_ratio + 0.3 * new_ratio
 
     def extract_tail(self, messages: list[dict]) -> list[dict]:
-        """Newest messages up to the tail budget.
+        """Protected tail: last N messages (PROTECTED_TAIL_COUNT), respecting token budget.
 
         Anchors: the newest message is always kept; an assistant tool_call
         message is never separated from its tool results.
@@ -119,7 +124,78 @@ class ContextCompressor:
                 break
             tail.pop(0)
 
+        # Ensure we have at least PROTECTED_TAIL_COUNT messages (boundary snap)
+        if len(tail) < PROTECTED_TAIL_COUNT and len(messages) >= PROTECTED_TAIL_COUNT:
+            # Take the last PROTECTED_TAIL_COUNT messages
+            tail = messages[-PROTECTED_TAIL_COUNT:]
+
         return tail
+
+    def extract_head(self, messages: list[dict]) -> list[dict]:
+        """Protected head: first system, first human, first assistant, first tool message.
+
+        Returns up to PROTECTED_HEAD_COUNT messages that form the protected head.
+        """
+        head: list[dict] = []
+        seen_roles = set()
+
+        for message in messages:
+            role = message.get("role", "")
+            if role and role not in seen_roles:
+                seen_roles.add(role)
+                head.append(message)
+                if len(head) >= PROTECTED_HEAD_COUNT:
+                    break
+
+        return head
+
+    def _snap_boundary(self, messages: list[dict], start_idx: int, end_idx: int) -> tuple[int, int]:
+        """Snap boundaries to not split tool_call/tool_result pairs.
+
+        Returns (start_idx, end_idx) adjusted to keep tool pairs together.
+        """
+        # Snap start_idx backward to not cut into a tool_call that has results after
+        while start_idx > 0:
+            msg = messages[start_idx - 1]
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                # Check if any tool results follow
+                tool_call_ids = {
+                    call.get("id")
+                    for call in msg.get("tool_calls") or []
+                }
+                result_ids = {
+                    m.get("tool_call_id")
+                    for m in messages[start_idx:end_idx]
+                    if m.get("role") == "tool"
+                }
+                if tool_call_ids & result_ids:
+                    # This tool_call has results in the middle, move start before it
+                    start_idx -= 1
+                    continue
+            break
+
+        # Snap end_idx forward to not cut off tool results
+        while end_idx < len(messages):
+            msg = messages[end_idx]
+            if msg.get("role") == "tool":
+                # This is a tool result, check if its call is in the middle
+                call_id = msg.get("tool_call_id")
+                if call_id:
+                    # Check if the corresponding tool_call is in the middle
+                    call_in_middle = any(
+                        call_id in {
+                            call.get("id")
+                            for call in m.get("tool_calls") or []
+                        }
+                        for m in messages[start_idx:end_idx]
+                        if m.get("role") == "assistant"
+                    )
+                    if call_in_middle:
+                        end_idx += 1
+                        continue
+            break
+
+        return start_idx, end_idx
 
     @staticmethod
     def _is_tool_call_message(message: dict) -> bool:
@@ -129,7 +205,7 @@ class ContextCompressor:
         )
 
     async def compress(self, messages: list[dict]) -> list[dict]:
-        """Return a compacted view of `messages` (summary row + tail)."""
+        """Return a compacted view of `messages` (protected head + summary row + protected tail)."""
 
         state = await self.session_state.get()
 
@@ -140,15 +216,26 @@ class ContextCompressor:
         previous_summary = state["summary"]
         conversation = [m for m in messages if not _is_summary_row(m)]
 
+        # Extract protected head and tail
+        head = self.extract_head(conversation)
         tail = self.extract_tail(conversation)
-        middle = conversation[: len(conversation) - len(tail)]
+
+        # Determine middle region (between head and tail)
+        head_len = len(head)
+        tail_len = len(tail)
+        middle = conversation[head_len:len(conversation) - tail_len] if tail_len > 0 else conversation[head_len:]
 
         if not middle:
             return messages
 
+        # Snap boundaries to not split tool pairs
+        head_len, middle_end = self._snap_boundary(conversation, head_len, head_len + len(middle))
+        middle = conversation[head_len:middle_end]
+        tail = conversation[middle_end:]
+
         new_summary = await self._summarize(previous_summary, middle)
 
-        compacted = [summary_row(new_summary), *tail]
+        compacted = [*head, summary_row(new_summary), *tail]
         effective = estimate_history_tokens(compacted) < self.threshold_tokens
 
         strikes = 0 if effective else state["ineffective_strikes"] + 1
@@ -156,10 +243,12 @@ class ContextCompressor:
         await self.session_state.set_strikes(strikes)
 
         logger.info(
-            "compaction_complete effective=%s strikes=%s middle_messages=%s",
+            "compaction_complete effective=%s strikes=%s middle_messages=%s head=%s tail=%s",
             effective,
             strikes,
             len(middle),
+            len(head),
+            len(tail),
         )
 
         return compacted
