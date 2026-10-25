@@ -771,34 +771,53 @@ return (
 
             {approval && (
               <div className="border-t border-amber-500/40 bg-amber-500/10 px-5 py-4">
-                <div className="text-[11px] tracking-[0.15em] text-amber-300 uppercase">
-                  APPROVAL REQUIRED
-                </div>
-                <div className="mt-2 text-[14px] leading-relaxed text-zinc-100">
-                  {approval.description || approval.target}
-                </div>
-                {approval.target && approval.target !== approval.description && (
-                  <pre className="mt-3 overflow-x-auto border border-zinc-800 bg-zinc-900 px-3 py-2 text-[12px] text-zinc-300 rounded">
-                    {approval.target}
-                  </pre>
-                )}
-                <div className="mt-3 flex gap-2">
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => handleApprove(true)}
-                    className="border border-amber-400/60 px-4 py-1.5 text-[13px] font-medium text-amber-200 hover:bg-amber-400/10 disabled:opacity-50 transition-colors rounded"
-                  >
-                    Allow
-                  </button>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => handleApprove(false)}
-                    className="border border-zinc-700 px-4 py-1.5 text-[13px] font-medium text-zinc-300 hover:bg-zinc-800 disabled:opacity-50 transition-colors rounded"
-                  >
-                    Decline
-                  </button>
+                <div className="flex items-start gap-3">
+                  <div className="w-8 h-8 flex-shrink-0 flex items-center justify-center rounded-full bg-amber-500/20">
+                    <svg className="w-5 h-5 text-amber-400" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.364-.213 2.98-1.742 2.98H4.42c-1.963 0-2.915-1.617-1.743-2.98l5.58-9.92zM10 15a.75.75 0 01-.75.75H4.5a.75.75 0 010-1.5h7.5a.75.75 0 01.75.75v2.5a.75.75 0 01-1.5 0v-2.5z" clipRule="evenodd" />
+                    </svg>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] tracking-[0.15em] text-amber-300 uppercase font-medium">
+                        APPROVAL REQUIRED
+                      </span>
+                      <span className="text-[11px] text-zinc-500 font-mono bg-zinc-800 px-1.5 py-0.5 rounded">
+                        {approval.tool || "unknown"}
+                      </span>
+                    </div>
+                    <div className="mt-2 text-[13px] leading-relaxed text-zinc-100 break-all">
+                      {approval.description}
+                    </div>
+                    {approval.target && approval.target !== approval.description && (
+                      <div className="mt-2">
+                        <div className="text-[10px] tracking-[0.1em] text-zinc-500 uppercase mb-1">
+                          COMMAND
+                        </div>
+                        <pre className="mt-1 overflow-x-auto border border-zinc-800 bg-zinc-950 px-3 py-2 text-[11px] text-zinc-300 rounded text-wrap break-all">
+                          {approval.target}
+                        </pre>
+                      )}
+                    </div>
+                  </div>
+                  <div className="mt-4 flex gap-2">
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => handleApprove(true)}
+                      className="flex-1 border border-amber-400/60 px-4 py-2 text-[13px] font-medium text-amber-200 hover:bg-amber-400/10 disabled:opacity-50 transition-colors rounded"
+                    >
+                      Allow
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => handleApprove(false)}
+                      className="flex-1 border border-zinc-700 px-4 py-2 text-[13px] font-medium text-zinc-300 hover:bg-zinc-800 disabled:opacity-50 transition-colors rounded"
+                    >
+                      Decline
+                    </button>
+                  </div>
                 </div>
               </div>
             )}

@@ -300,11 +300,70 @@ async def chat_stream(request: ChatRequest):
         elif event.type == "tool_end":
             msg = {"tool": event.tool_name, "ok": event.success, "summary": event.error or ""}
         elif event.type == "approval":
+            # Build a clear description with the actual command being run
+            tool_name = event.tool_name
+            resource = event.resource
+            
+            # Build a clear description with the actual command
+            if tool_name == "run_command":
+                cmd = event.resource or ""
+                description = f"Run command: {cmd}"
+                target = cmd[:200] + ("..." if len(cmd) > 200 else "")
+            elif tool_name == "run_opencode":
+                obj = ""
+                try:
+                    import json
+                    args = json.loads(event.resource or "{}")
+                    obj = args.get("objective", "")
+                except:
+                    pass
+                description = f"OpenCode: {obj[:100]}{'...' if len(obj) > 100 else ''}"
+                target = obj[:200] + ("..." if len(obj) > 200 else "")
+            elif tool_name == "run_hermes":
+                obj = ""
+                try:
+                    import json
+                    args = json.loads(event.resource or "{}")
+                    obj = args.get("objective", "")
+                except:
+                    pass
+                description = f"Hermes: {obj[:100]}{'...' if len(obj) > 100 else ''}"
+                target = obj[:200] + ("..." if len(obj) > 200 else "")
+            elif tool_name == "run_opencode":
+                obj = ""
+                try:
+                    import json
+                    args = json.loads(event.resource or "{}")
+                    obj = args.get("objective", "")
+                except:
+                    pass
+                description = f"OpenCode: {obj[:100]}{'...' if len(obj) > 100 else ''}"
+                target = obj[:200] + ("..." if len(obj) > 200 else "")
+            elif tool_name == "write_file":
+                path = event.resource or ""
+                description = f"Write file: {path}"
+                target = path
+            elif tool_name == "patch":
+                path = event.resource or ""
+                description = f"Patch file: {path}"
+                target = path
+            elif tool_name == "write_file":
+                path = event.resource or ""
+                description = f"Write file: {path}"
+                target = path
+            elif tool_name == "patch":
+                path = event.resource or ""
+                description = f"Patch file: {path}"
+                target = path
+            else:
+                description = f"Run {tool_name}"
+                target = event.resource or ""
+            
             msg = {
                 "approval": {
                     "id": event.approval_id,
-                    "description": f"Run {event.tool_name}",
-                    "target": event.resource,
+                    "description": description,
+                    "target": target,
                     "worker_task_id": None,
                 }
             }
