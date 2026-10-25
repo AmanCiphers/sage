@@ -39,6 +39,22 @@ from app.tools.session_search import register_session_search
 from app.tools.shell_tools import register_shell_tools
 from config.model_catalog import get_model_catalog
 
+# Import interfaces for DI
+from app.interfaces import (
+    IConversationEngine,
+    IContextBuilder,
+    IToolRegistry,
+    IPermissionEngine,
+    IWorkerPool,
+    IAgentBackend,
+    IMemoryStore,
+    IScheduler,
+    IProactiveEngine,
+    IEventBus,
+    IInferenceManager,
+    IVerification,
+)
+
 # Global SAGE application instance (set during startup)
 _sage_app: "SAGEApplication | None" = None
 
@@ -55,7 +71,22 @@ def set_sage_app(app: "SAGEApplication | None") -> None:
 
 
 class SAGEApplication:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        # Interface implementations (for DI/testing)
+        conversation_engine: IConversationEngine | None = None,
+        context_builder: IContextBuilder | None = None,
+        tool_registry: IToolRegistry | None = None,
+        permission_engine: IPermissionEngine | None = None,
+        worker_pool: IWorkerPool | None = None,
+        agent_backends: dict[str, IAgentBackend] | None = None,
+        memory_store: IMemoryStore | None = None,
+        scheduler: IScheduler | None = None,
+        proactive_engine: IProactiveEngine | None = None,
+        event_bus: IEventBus | None = None,
+        inference_manager: IInferenceManager | None = None,
+        verification: IVerification | None = None,
+    ) -> None:
         self.logger = get_logger("sage")
 
         self.database = Database(
@@ -75,11 +106,14 @@ class SAGEApplication:
         )
         self.session_state = SessionStateStore(self.database)
         self.task_store = TaskStore(self.database)
-        self.memory_store = MemoryStore(
+
+        # Use injected memory store or create default
+        self.memory_store: IMemoryStore = memory_store or MemoryStore(
             settings.database_path.parent / "memory.md"
         )
 
-        self.tool_registry = ToolRegistry()
+        # Use injected tool registry or create default
+        self.tool_registry: IToolRegistry = tool_registry or ToolRegistry()
 
         self.model_registry = ModelRegistry()
 
@@ -91,7 +125,8 @@ class SAGEApplication:
                 # Provider is unavailable because its credentials are not configured.
                 continue
 
-        self.inference_manager = InferenceManager(
+        # Use injected inference manager or create default
+        self.inference_manager: IInferenceManager = inference_manager or InferenceManager(
             self.model_registry
         )
 
@@ -101,8 +136,8 @@ class SAGEApplication:
         # Approval gate (CLI callback)
         self.approval_gate = ApprovalGate(cli_callback=self._cli_approval_callback)
 
-        # Permission engine with smart guardian and approval gate callback
-        self.permission_engine = PermissionEngine(
+        # Use injected permission engine or create default
+        self.permission_engine: IPermissionEngine = permission_engine or PermissionEngine(
             smart_guardian=self.smart_guardian,
             gateway_callback=self._gateway_approval_callback,
         )
@@ -111,7 +146,7 @@ class SAGEApplication:
 
         # Event system
         self.event_store = EventStore(self.database)
-        self.event_bus = EventBus(self.event_store)
+        self.event_bus: IEventBus = event_bus or EventBus(self.event_store)
 
         self.execution_engine = ExecutionEngine(
             self.tool_registry,
@@ -125,7 +160,8 @@ class SAGEApplication:
 
         # Supervisor: SAGE's interface to the employee roster (replaces the
         # old process-worker TaskDispatcher).
-        self.supervisor = Supervisor(
+        # Use injected worker pool or create default Supervisor
+        self.supervisor: IWorkerPool = worker_pool or Supervisor(
             task_store=self.task_store,
             permission_engine=self.permission_engine,
             registry=self.tool_registry,
@@ -153,12 +189,12 @@ class SAGEApplication:
 
         # Scheduler & Proactive
         self.scheduler_store = SchedulerStore(self.database)
-        self.scheduler = SchedulerEngine(
+        self.scheduler: IScheduler = scheduler or SchedulerEngine(
             store=self.scheduler_store,
             event_bus=self.event_bus,
             check_interval_seconds=settings.scheduler_check_interval,
         )
-        self.proactive = ProactiveEngine(
+        self.proactive: IProactiveEngine = proactive_engine or ProactiveEngine(
             store=self.scheduler_store,
             event_bus=self.event_bus,
             execution_engine=self.execution_engine,
@@ -178,6 +214,7 @@ class SAGEApplication:
         primary_model = router.route(ModelRequirements(tool_calling=True))
         effective_context_window = primary_model.metadata.context_window
 
+        # Use injected compressor or create default
         self.compressor = ContextCompressor(
             inference_manager=self.inference_manager,
             session_state=self.session_state,
@@ -185,7 +222,8 @@ class SAGEApplication:
             threshold_ratio=settings.compaction_threshold_ratio,
         )
 
-        self.context_builder = ContextBuilder(
+        # Use injected context builder or create default
+        self.context_builder: IContextBuilder = context_builder or ContextBuilder(
             message_store=self.message_store,
             session_state=self.session_state,
             compressor=self.compressor,
@@ -196,7 +234,8 @@ class SAGEApplication:
             embedding_provider=self.embedding_provider,
         )
 
-        self.conversation_engine = ConversationLoop(
+        # Use injected conversation engine or create default
+        self.conversation_engine: IConversationEngine = ConversationLoop(
             inference_manager=self.inference_manager,
             tool_registry=self.tool_registry,
             permission_engine=self.permission_engine,

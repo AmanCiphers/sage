@@ -73,6 +73,14 @@ class Settings(BaseSettings):
     rag_fallback_model: str = "Qwen/Qwen3-Embedding-8B"
     rag_embedding_dim: int = 1024
 
+    # Feature flags for v2 subsystems (default off, opt-in via env)
+    feature_real_tokenizer: bool = False
+    feature_parallel_tools: bool = False
+    feature_skills: bool = False
+    feature_threat_scan: bool = False
+    feature_compaction_v2: bool = False
+    feature_voice: bool = False
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_prefix="SAGE_",

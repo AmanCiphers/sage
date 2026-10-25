@@ -7,6 +7,7 @@ Exposes REST + SSE + WebSocket endpoints for the Next.js frontend.
 import asyncio
 import contextlib
 import json
+import os
 import sys
 from contextlib import asynccontextmanager
 from typing import Any
@@ -17,7 +18,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 # Add parent directory to path for app imports
-sys.path.insert(0, "/Users/aman/sage-v2")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.application import SAGEApplication
 from app.conversation.models import AssistantResponse, LoopEvent, UserMessage

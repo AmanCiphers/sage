@@ -20,6 +20,25 @@ dependencies = [
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+exclude = ["web*", "brag*", "data*", "config*", "migrations*", "tests*"]
+
+[project.optional-dependencies]
+tokenizer = [
+    "transformers>=4.36",
+    "tiktoken>=0.7",
+]
+voice = [
+    "aiortc>=1.9",
+    "faster-whisper>=1.0",
+    "onnxruntime>=1.16",
+    "pyaudio>=0.2.13",
+    "numpy>=1.24",
+    "opuslib>=3.0",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
