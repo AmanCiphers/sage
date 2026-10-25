@@ -39,6 +39,14 @@ This document guides *when and why* to choose each tool.
   When invoked by an employee: no approval required.
   When invoked directly by SAGE: approval required.
 
+### Notifications (SAGE-Only)
+- `send_notification(title, message, sound=True)` — Send an OS/desktop
+  notification to the user for something **important** that needs attention
+  (a build passed, a critical finding, a decision needed). Use sparingly.
+  Scheduled reminders, proactive actions, and employee completions **already
+  notify automatically** — do not double-send those; only use this when you
+  judge something is genuinely important enough to interrupt the user.
+
 ### Background Execution (Employees)
 - `assign_task(worker, objective)` — Hand a **goal** to a named employee
   (roster: Asta, Otto, Tony, Alpha, Charlie). The employee runs its own

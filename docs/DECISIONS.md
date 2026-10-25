@@ -725,3 +725,21 @@ roster/activity panel (Phase 9, API already exposed at `/api/workers*`).
 - Scheduler loop check interval is configurable (`SAGE_SCHEDULER_CHECK_INTERVAL`, default 5s) so `run_at` reminders fire promptly.
 
 **Why:** The scheduler silently used UTC while the user expects IST, so cron reminders fired 5.5h early (a 09:00 IST luggage reminder fired at 14:30 IST). Also, cron can't schedule "10 seconds from now". Timezone-aware cron + `run_at` fixes both correctness and precision.
+
+### D42 — Textual TUI as the interactive CLI (ANSI kept as fallback)
+
+**Decision:**
+- Added the `textual` dependency and a `SageTui` app (`app/cli_tui.py`) as the primary interactive CLI when stdout is a TTY.
+- The TUI drives the same `ConversationLoop` via the existing callback contract (`on_delta`, `on_event`, `turn_start`, `turn_end`); the core loop and `SAGEApplication` are unchanged.
+- The ANSI `CliRenderer` is kept as the fallback for non-TTY/CI/`NO_COLOR`.
+
+**Why:** The prior ANSI input model used a background reader thread that raced streamed output (prompt re-appearing mid-response, delayed thinking indicator, needing Enter to restore the prompt). A proper TUI owns both input and rendering, fixing those bugs and giving a modern, readable interface. Keeping the ANSI fallback preserves CI/testing and headless use.
+
+### D43 — OS/desktop notifications: auto (silent) + SAGE-initiated (sounding)
+
+**Decision:**
+- New `app/notifications/os.py` provides `os_notify()` across macOS (`osascript`), Linux (`notify-send`), and Windows (PowerShell), fail-safe and gated by `SAGE_OS_NOTIFICATIONS` (default true).
+- `OsNotifier` subscribes to the event bus and sends **silent** OS notifications for scheduled jobs, proactive actions, reminders, employee-finished, and task-failed — so recurring/system events notify by default without being noisy.
+- A **`send_notification` tool** (SAGE-only, `employee_eligible=False`) lets SAGE send a **sounding** notification for something it deems important. Prompt guidance says not to double-notify reminders that already auto-send.
+
+**Why:** Users want desktop notifications for scheduled/proactive/reminder events and a way for SAGE to surface "something important." Silent auto-notifications for system events + sounding SAGE-initiated nudges balance usefulness against noise.

@@ -42,6 +42,10 @@ class Settings(BaseSettings):
 
     tavily_api_key: str | None = None
 
+    # OS/desktop notifications for scheduled jobs, proactive actions,
+    # reminders, and background work. Disable in CI/headless.
+    os_notifications_enabled: bool = True
+
     # Default timezone for cron/scheduled jobs (IANA name, e.g. "Asia/Kolkata").
     timezone: str = "Asia/Kolkata"
 

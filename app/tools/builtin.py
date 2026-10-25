@@ -82,6 +82,12 @@ class CancelTaskInput(ToolInput):
     reason: str = "Cancelled by SAGE"
 
 
+class SendNotificationInput(ToolInput):
+    title: str
+    message: str
+    sound: bool = True
+
+
 class RunOpenCodeInput(ToolInput):
     objective: str
     model: str | None = None
@@ -347,6 +353,18 @@ async def cancel_task(
         return json.dumps({"success": False, "error": str(e)})
 
 
+def send_notification(
+    title: str,
+    message: str,
+    sound: bool = True,
+) -> str:
+    """Send an OS/desktop notification. SAGE-only tool."""
+    from app.notifications.os import os_notify
+
+    delivered = os_notify(title, message, sound=sound)
+    return json.dumps({"success": delivered, "title": title, "message": message})
+
+
 def register_builtin_tools(registry, supervisor=None) -> None:
     registry.register(
         ToolDefinition(
@@ -447,6 +465,26 @@ def register_builtin_tools(registry, supervisor=None) -> None:
             destructive=True,
             employee_eligible=False,
             handler=cancel_task,
+        )
+    )
+
+    # SAGE-only: send an OS/desktop notification for something important.
+    registry.register(
+        ToolDefinition(
+            name="send_notification",
+            description=(
+                "Send an OS/desktop notification to the user for something "
+                "important that needs attention (e.g. a build passed, a "
+                "critical finding, a reminder you set just fired). Use "
+                "sparingly — scheduled reminders and employee completions "
+                "already notify automatically, so do not double-send those. "
+                "SAGE-only tool."
+            ),
+            classification=ToolClassification.READ_ONLY,
+            input_schema=SendNotificationInput,
+            destructive=False,
+            employee_eligible=False,
+            handler=send_notification,
         )
     )
 

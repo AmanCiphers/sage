@@ -1,4 +1,5 @@
 import asyncio
+import os
 import re
 import sys
 import threading
@@ -12,25 +13,70 @@ from app.observability.logging import configure_logging
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]")
 
 
+def _roster_summary(app: SAGEApplication) -> str:
+    """Short status string of active employees for the TUI status bar."""
+    try:
+        rows = app.supervisor.roster_status()
+    except Exception:
+        return ""
+    active = [r["name"] for r in rows if r.get("status") == "active"]
+    if active:
+        return "⚡ " + ", ".join(active)
+    return "standby"
+
+
+def _use_tui() -> bool:
+    """Use the Textual TUI on an interactive TTY (skip when NO_COLOR / non-TTY)."""
+    if os.environ.get("SAGE_TUI") == "0":
+        return False
+    if os.environ.get("NO_COLOR"):
+        return False
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+async def _run_tui(app: SAGEApplication, models: list[str], workspace: str) -> None:
+    """Run the Textual TUI, driving the same conversation loop."""
+    from app.cli_tui import SageTui
+
+    loop = app.conversation_engine
+
+    async def on_submit(message: UserMessage) -> AssistantResponse:
+        return await loop.handle_stream(message, tui.on_delta)
+
+    tui = SageTui(
+        model_ids=models,
+        workspace=workspace,
+        on_submit=on_submit,
+        completion_notifier=app.completion_notifier,
+        status_provider=lambda: _roster_summary(app),
+    )
+    loop.on_event = tui.on_event
+    await tui.run_async()
+    await app.stop()
+
+
 async def main() -> None:
     configure_logging()
 
     app = SAGEApplication()
     await app.start()
 
-    renderer = CliRenderer()
-    loop = app.conversation_engine
-    loop.on_event = renderer.on_event
-
     models = [
         metadata.model_id
         for metadata in app.model_registry.list()
         if metadata.available
     ]
-    renderer.banner(
-        models,
-        str(settings.workspace_path.expanduser().resolve()),
-    )
+    workspace = str(settings.workspace_path.expanduser().resolve())
+
+    if _use_tui():
+        await _run_tui(app, models, workspace)
+        return
+
+    renderer = CliRenderer()
+    loop = app.conversation_engine
+    loop.on_event = renderer.on_event
+
+    renderer.banner(models, workspace)
 
     async def run_turn(get_response) -> AssistantResponse:
         renderer.turn_start()

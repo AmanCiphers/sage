@@ -18,6 +18,7 @@ from app.inference.router import ModelRouter
 from app.logging import get_logger
 from app.memory.store import MemoryStore
 from app.notifications.completion import CompletionNotifier
+from app.notifications.os import OsNotifier
 from app.operations.manager import OperationManager
 from app.permissions.approvals import ApprovalManager
 from app.permissions.engine import PermissionEngine
@@ -166,6 +167,8 @@ class SAGEApplication:
 
         # Collects employee-finished notices for delivery between turns.
         self.completion_notifier = CompletionNotifier()
+        # Sends silent OS notifications for scheduled/proactive/reminder/background events.
+        self.os_notifier = OsNotifier()
 
         # Wire up tool handlers that need scheduler/proactive
         self._wire_tool_handlers()
@@ -418,6 +421,9 @@ class SAGEApplication:
 
         # Wire completion notices to the event bus
         self.event_bus.subscribe_all(self.completion_notifier.handle_event)
+
+        # Wire OS notifications (silent) to the event bus
+        self.event_bus.subscribe_all(self.os_notifier.handle_event)
 
         settings.workspace_path.expanduser().mkdir(parents=True, exist_ok=True)
 

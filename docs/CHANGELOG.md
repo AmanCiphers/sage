@@ -365,6 +365,27 @@ Changes from the web-UI integration work that were **not** recorded in
 - **Files:** `app/cli.py`, `main.py`
 - **Why:** The CLI had grown messy (duplicate methods, broken prompt, ad-hoc prints). This is a focused readability overhaul: consistent section headers, adaptive tool durations, and a single renderer owning all output.
 
+## A29 — Textual TUI (hermes-style interactive UI)  *(2026-10-24)*
+
+- **Area:** CLI / UI
+- **Change:**
+  - Added `textual` dependency and a new `app/cli_tui.py` (`SageTui`) — a full-screen TUI with a scrollable conversation feed, persistent input box (↑/↓ history), status bar (active employees), and an immediate "thinking" indicator.
+  - `main.py` now launches the TUI on an interactive TTY; otherwise it falls back to the ANSI `CliRenderer` (non-TTY/CI/`NO_COLOR`).
+  - The TUI drives the **same `ConversationLoop`** through the thin callback contract (`on_delta`, `on_event`, `turn_start`, `turn_end`) — the core loop, employees, tools, scheduler, RAG, and permissions are untouched.
+  - Removed the ANSI reader-thread stdin loop from the TUI path (Textual owns input).
+- **Files:** `app/cli_tui.py` (new), `main.py`, `pyproject.toml`
+- **Why:** The prior ANSI input model raced a background reader thread against streamed output (prompt timing bugs). A proper Textual TUI fixes input/rendering cleanly and gives a modern, readable interface.
+
+## A30 — OS/desktop notifications  *(2026-10-24)*
+
+- **Area:** Notifications / Scheduler / Tools
+- **Change:**
+  - New `app/notifications/os.py`: `os_notify(title, message, sound)` — macOS `osascript` (Notification Center), Linux `notify-send`, Windows PowerShell fallback; fail-safe (never crashes). Gated by `SAGE_OS_NOTIFICATIONS` (default true).
+  - **`OsNotifier`** subscribes to the event bus and sends **silent** OS notifications automatically for scheduled jobs, proactive actions, reminders, employee-finished, and task-failed (mirrors the CLI's interest set).
+  - New **`send_notification(title, message, sound=True)`** tool (SAGE-only) so SAGE can send a *sounding* OS notification for something important. Documented in `tools.md`/`authority.md` (tells SAGE not to double-notify reminders it already auto-sends).
+- **Files:** `app/notifications/os.py` (new), `app/tools/builtin.py`, `app/application.py`, `app/config.py`, `app/conversation/tools.md`, `app/conversation/authority.md`, `tests/unit/test_os_notifications.py` (new)
+- **Why:** Users want desktop notifications for scheduled jobs/reminders/proactive actions, plus a way for SAGE to nudge on something important. Auto (silent) for scheduled/proactive + SAGE-initiated (sounding) covers both.
+
 ---
 
 # Part B — Proposed: Employee Workers
