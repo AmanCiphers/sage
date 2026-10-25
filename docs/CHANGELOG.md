@@ -404,6 +404,13 @@ Changes from the web-UI integration work that were **not** recorded in
 - **Files:** `app/notifications/os.py`, `tests/unit/test_os_notifications.py`
 - **Why:** Earlier the auto-notifier sent everything silently, so a scheduled reminder produced no chime even though `send_notification` did. Users expect an audible nudge for reminders and scheduled work.
 
+## A33 — Chat area: YOU / SAGE labels with divider lines  *(2026-10-25)*
+
+- **Area:** CLI / UI
+- **Change:** The TUI chat feed now renders each message as a bold `YOU:` / `SAGE:` label followed by a full-width divider line, then the message text — a cleaner "conversation log" look instead of inline prefixes.
+- **Files:** `app/cli_tui.py`
+- **Why:** User requested a clearer chat layout with the sender label and a rule under it for each message.
+
 ---
 
 # Part B — Proposed: Employee Workers
