@@ -404,7 +404,6 @@ class SageTui(App):
     async def turn_end(self, response: AssistantResponse) -> None:
         self._set_thinking(False)
         if self._live_text:
-            self._write_rule()
             self._live_text = ""
         self._live = None
         self._live_md = None
@@ -428,6 +427,7 @@ class SageTui(App):
         self._scroll_bottom()
 
     def _add_user_message(self, text: str) -> None:
+        # One separator before each exchange (YOU + SAGE reply).
         self._write_rule()
         self.feed.mount(
             Vertical(
@@ -436,7 +436,6 @@ class SageTui(App):
                 classes="msg msg-user",
             )
         )
-        self._write_rule()
         self._scroll_bottom()
 
     def _add_sage_message(self, text: str) -> None:
@@ -447,7 +446,6 @@ class SageTui(App):
                 classes="msg msg-sage",
             )
         )
-        self._write_rule()
         self._scroll_bottom()
 
     def _write_rule(self) -> None:
