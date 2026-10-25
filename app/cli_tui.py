@@ -82,6 +82,7 @@ class SageTui(App):
         self._history: list[str] = []
         self._history_idx: int | None = None
         self._busy = False
+        self._live_text = ""
 
     # ---- compose ----
 
@@ -90,6 +91,10 @@ class SageTui(App):
         with Vertical():
             self.feed = RichLog(highlight=True, markup=True, wrap=True)
             yield self.feed
+            # Live streaming area for the in-progress SAGE response. RichLog
+            # cannot stream with end="" so we buffer here and commit on turn_end.
+            self._live = Static("", id="live-response")
+            yield self._live
             yield Static("", id="thinking")
             yield Static("", id="status")
             with Horizontal(id="input-row"):
@@ -150,6 +155,7 @@ class SageTui(App):
             self.feed.write("[yellow](SAGE is busy — try again shortly)[/]")
             return
         self._busy = True
+        self._live_text = ""
         self._set_thinking(True)
 
         if message.startswith("/"):
@@ -218,11 +224,16 @@ class SageTui(App):
 
     async def on_delta(self, text: str) -> None:
         self._set_thinking(False)
-        self.feed.write(text, end="")
+        self._live_text += text
+        self._live.update(f"[cyan]SAGE:[/] {self._live_text}")
 
     async def turn_end(self, response: AssistantResponse) -> None:
         self._set_thinking(False)
-        self.feed.write("")
+        # Commit the buffered live response to the feed, then clear it.
+        if self._live_text:
+            self.feed.write(f"[cyan]SAGE:[/] {self._live_text}")
+            self._live_text = ""
+            self._live.update("")
         elapsed = time.perf_counter() - getattr(self, "_turn_started", 0.0)
         stats = [f"{elapsed:.1f}s"]
         if response.input_tokens or response.output_tokens:
