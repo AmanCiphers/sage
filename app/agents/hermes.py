@@ -82,16 +82,31 @@ class HermesBackend(AgentBackend):
             stderr=asyncio.subprocess.PIPE,
         )
 
-        stdout, stderr = await self._process.communicate()
-        output = stdout.decode("utf-8", errors="replace")
-        error = stderr.decode("utf-8", errors="replace")
+        output_lines = []
+        session_id = None
+
+        # Stream stdout
+        async for line in self._process.stdout:
+            line_str = line.decode("utf-8", errors="replace").rstrip("\n")
+            output_lines.append(line_str)
+
+            # Extract session ID from output if present
+            extracted = self._extract_session_id(line_str)
+            if extracted:
+                session_id = extracted
+
+        # Read stderr silently
+        async for _ in self._process.stderr:
+            pass
+
+        await self._process.wait()
+
+        output = "\n".join(output_lines)
 
         if self._process.returncode != 0:
             logger.warning("Hermes exited with code %d: %s", self._process.returncode, error)
 
-        session_id = self._extract_session_id(output)
-
-        return output, session_id
+        return "\n".join(output_lines), session_id
 
     def _extract_session_id(self, output: str) -> str | None:
         """Extract Hermes session ID from --pass-session-id output."""
@@ -195,14 +210,79 @@ class HermesBackend(AgentBackend):
         return self._current_session_id
 
     async def stream_events(self, task: AgentTask) -> AsyncIterator[AgentEvent]:
-        """Stream events during Hermes execution."""
+        """Stream events during Hermes execution with real-time output."""
+        import time
+        start = time.monotonic()
+
+        continue_last = task.session_id is None and self._current_session_id is not None
+        session_id = task.session_id or self._current_session_id
+        prompt = self._build_prompt(task)
+
         yield AgentEvent(type="start", message="Starting Hermes task...")
-        result = await self.run_task(task)
-        if result.success:
+
+        cmd = [self.hermes_path, "-z", prompt]
+
+        if task.model:
+            cmd.extend(["--model", task.model])
+        else:
+            cmd.extend(["--model", self.default_model])
+
+        if continue_last:
+            cmd.append("--continue")
+        elif session_id:
+            cmd.extend(["--resume", session_id])
+
+        cmd.extend(["--in", str(self.workspace)])
+        cmd.append("--pass-session-id")
+
+        logger.debug("Running Hermes: %s", " ".join(cmd))
+
+        self._process = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=str(self.workspace),
+            env=self.env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        output_lines = []
+        new_session_id = None
+
+        yield AgentEvent(type="start", message="Starting Hermes task...")
+
+        # Stream stdout
+        async for line in self._process.stdout:
+            line_str = line.decode("utf-8", errors="replace").rstrip("\n")
+            yield AgentEvent(
+                type="progress",
+                message=line_str[:500],
+                data={"source": "stdout", "line": line_str}
+            )
+            output_lines.append(line_str)
+
+            # Extract session ID
+            extracted = self._extract_session_id(line_str)
+            if extracted:
+                self._current_session_id = extracted
+
+        # Read stderr silently
+        async for _ in self._process.stderr:
+            pass
+
+        await self._process.wait()
+
+        output = "\n".join(output_lines)
+        duration = time.monotonic() - start
+        success = self._process is not None and self._process.returncode == 0
+
+        # Clean output: drop the trailing session-id marker line if present.
+        parsed_output = self._strip_session_line(output)
+
+        if success:
             yield AgentEvent(
                 type="complete",
                 message="Task completed",
-                data={"result": result.output},
+                data={"result": parsed_output, "duration_seconds": duration},
             )
         else:
-            yield AgentEvent(type="error", message=result.error or "Task failed")
+            yield AgentEvent(type="error", message="Task failed")
