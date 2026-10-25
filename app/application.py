@@ -112,8 +112,13 @@ class SAGEApplication:
             settings.database_path.parent / "memory.md"
         )
 
-        # Use injected tool registry or create default
-        self.tool_registry: IToolRegistry = tool_registry or ToolRegistry()
+        # Use injected tool registry or create default with toolset profile
+        if tool_registry is None:
+            from app.tools.toolsets import get_active_toolset
+            active_toolset = get_active_toolset()
+            self.tool_registry: IToolRegistry = ToolRegistry(toolset_profile=active_toolset)
+        else:
+            self.tool_registry: IToolRegistry = tool_registry
 
         self.model_registry = ModelRegistry()
 
@@ -263,8 +268,12 @@ class SAGEApplication:
             "remove_job": lambda job_id: self._remove_job_json(job_id),
         }
         for name, handler in scheduler_tools.items():
-            tool = self.tool_registry.get(name)
-            tool.handler = handler
+            try:
+                tool = self.tool_registry.get(name)
+                tool.handler = handler
+            except KeyError:
+                # Tool not in current toolset, skip
+                pass
 
         # Proactive tools need proactive engine
         proactive_tools = {
@@ -274,8 +283,12 @@ class SAGEApplication:
             "remove_rule": lambda rule_id: self._remove_rule_json(rule_id),
         }
         for name, handler in proactive_tools.items():
-            tool = self.tool_registry.get(name)
-            tool.handler = handler
+            try:
+                tool = self.tool_registry.get(name)
+                tool.handler = handler
+            except KeyError:
+                # Tool not in current toolset, skip
+                pass
 
     async def _list_jobs_json(self, enabled_only: bool = False) -> str:
         import json

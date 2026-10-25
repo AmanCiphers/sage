@@ -81,6 +81,9 @@ class Settings(BaseSettings):
     feature_compaction_v2: bool = False
     feature_voice: bool = False
 
+    # Toolset profile (coding, research, writing, verification, organization, full)
+    toolset_profile: str = "full"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_prefix="SAGE_",

@@ -3,13 +3,26 @@ from __future__ import annotations
 import builtins
 
 from app.tools.models import ToolDefinition
+from app.tools.toolsets import ToolsetProfile, is_tool_in_toolset, get_active_toolset
 
 
 class ToolRegistry:
-    def __init__(self) -> None:
+    def __init__(self, toolset_profile: ToolsetProfile | None = None) -> None:
         self._tools: dict[str, ToolDefinition] = {}
+        self._toolset_profile = toolset_profile or get_active_toolset()
+
+    def set_toolset_profile(self, profile: ToolsetProfile) -> None:
+        """Change the active toolset profile."""
+        self._toolset_profile = profile
+
+    def get_toolset_profile(self) -> ToolsetProfile:
+        return self._toolset_profile
 
     def register(self, tool: ToolDefinition) -> None:
+        # Check if tool is allowed in current toolset
+        if not is_tool_in_toolset(tool.name, self._toolset_profile):
+            return  # Silently skip tools not in active toolset
+        
         if tool.name in self._tools:
             raise ValueError(f"Tool already registered: {tool.name}")
 
@@ -75,3 +88,7 @@ class ToolRegistry:
             )
 
         return definitions
+    
+    def get_available_tool_names(self) -> list[str]:
+        """Get list of tool names available in current toolset."""
+        return list(self._tools.keys())
