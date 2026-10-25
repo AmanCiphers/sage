@@ -5,6 +5,7 @@ from typing import Any
 from pydantic import Field
 
 from app.permissions.detection import is_read_only_command
+from app.skills.tools import register_skill_tools
 
 from .models import ToolClassification, ToolDefinition
 from .schemas import ToolInput
@@ -700,6 +701,9 @@ def register_builtin_tools(registry, supervisor=None) -> None:
         )
     )
 
+
+    # Register skill tools
+    register_skill_tools(registry)
 
     # These will be set by the application after supervisor is created
     # (assign_task, task_status handlers need supervisor)
