@@ -163,6 +163,10 @@ async def build_employee(
     workspace = root / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
 
+    # Auto-authorize employee workspace
+    from app.tools.workspace import authorize_workspace
+    authorize_workspace(workspace)
+
     # Set up per-employee logger
     emp_logger = _setup_employee_logger(spec.key)
     emp_logger.info("employee_initialized key=%s workspace=%s", spec.key, workspace)

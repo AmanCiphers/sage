@@ -92,6 +92,9 @@ class Settings(BaseSettings):
     # Toolset profile (coding, research, writing, verification, organization, full)
     toolset_profile: str = "full"
 
+    # Disable workspace authorization checks (for testing)
+    disable_workspace_auth: bool = False
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_prefix="SAGE_",

@@ -479,6 +479,10 @@ class SAGEApplication:
 
         settings.workspace_path.expanduser().mkdir(parents=True, exist_ok=True)
 
+        # Auto-authorize the main workspace so SAGE can access it without explicit permission
+        from app.tools.workspace import authorize_workspace
+        authorize_workspace(settings.workspace_path.expanduser().resolve())
+
         recovered = await self.operations.recover()
         if recovered:
             self.logger.warning("stale_operations_recovered count=%s", recovered)

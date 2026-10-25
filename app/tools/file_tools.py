@@ -11,6 +11,24 @@ MAX_LIST_ENTRIES = 200
 MAX_WRITE_CHARS = 1_000_000
 
 
+"""File tools: read_file, list_files, write_file, patch."""
+
+import json
+from pathlib import Path
+
+from app.tools.models import ToolCapability, ToolClassification, ToolDefinition
+from app.tools.schemas import ToolInput
+from app.tools.workspace import (
+    current_workspace,
+    authorized_workspace,
+    is_path_authorized,
+)
+
+MAX_READ_CHARS = 100_000
+MAX_LIST_ENTRIES = 200
+MAX_WRITE_CHARS = 1_000_000
+
+
 def resolve_path(path: str) -> Path:
     """Expand ~ and anchor relative paths to the current workspace.
 
@@ -22,16 +40,33 @@ def resolve_path(path: str) -> Path:
     Paths that don't exist under the workspace but do exist under the
     project root (e.g. `data/employees/...`) resolve from there, so SAGE
     can inspect its own data/employee stores without needing absolute paths.
+
+    Authorization: Paths must be within the authorized workspace unless
+    they are project/system paths that SAGE needs to access internally.
     """
 
-    from app.tools.workspace import current_workspace
+    from app.tools.workspace import current_workspace, authorized_workspace, is_path_authorized
 
     expanded = Path(path).expanduser()
     if expanded.is_absolute():
-        return expanded.resolve()
+        resolved = expanded.resolve()
+        # Check authorization for absolute paths
+        if not is_path_authorized(resolved):
+            # Allow access to project root and employee data directories
+            if not _is_system_path(resolved):
+                raise PermissionError(
+                    f"Access denied: '{resolved}' is outside the authorized workspace. "
+                    f"Use the 'authorize_workspace' tool to grant access to this directory."
+                )
+        return resolved
 
     workspace_candidate = (current_workspace() / expanded).resolve()
     if workspace_candidate.exists():
+        if not is_path_authorized(workspace_candidate):
+            raise PermissionError(
+                f"Access denied: '{workspace_candidate}' is outside the authorized workspace. "
+                f"Use the 'authorize_workspace' tool to grant access to this directory."
+            )
         return workspace_candidate
 
     from pathlib import Path as _Path
@@ -41,6 +76,17 @@ def resolve_path(path: str) -> Path:
         return project_candidate
 
     return workspace_candidate
+
+
+def _is_system_path(path: Path) -> bool:
+    """Check if path is a system/project path that should be accessible without explicit authorization."""
+    try:
+        project_root = Path(__file__).resolve().parents[2]
+        # Allow access to project root and employee data directories
+        path.resolve().relative_to(project_root)
+        return True
+    except ValueError:
+        return False
 
 
 class ReadFileInput(ToolInput):
