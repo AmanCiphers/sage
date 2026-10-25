@@ -185,11 +185,14 @@ class SageTui(App):
         self._drain_notices()
 
     # ---- loop callback surface (used by main.py to wire the loop) ----
+    # NOTE: do NOT name this `on_event` — Textual's App reserves `on_event`
+    # for its own UI events (mount/unmount/message), so our loop handler must
+    # use a distinct name to avoid the collision that crashed the app.
 
     def turn_start(self) -> None:
         self._set_thinking(True)
 
-    async def on_event(self, event: LoopEvent) -> None:
+    async def sage_on_event(self, event: LoopEvent) -> None:
         if event.type == "llm_start":
             self._set_thinking(True)
         elif event.type == "tool_start":

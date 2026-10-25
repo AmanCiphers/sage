@@ -50,7 +50,7 @@ async def _run_tui(app: SAGEApplication, models: list[str], workspace: str) -> N
         completion_notifier=app.completion_notifier,
         status_provider=lambda: _roster_summary(app),
     )
-    loop.on_event = tui.on_event
+    loop.on_event = tui.sage_on_event
     await tui.run_async()
     await app.stop()
 
