@@ -40,6 +40,15 @@ class CommandNode:
     background: bool = False
 
 
+@dataclass
+class SafetyAnalysis:
+    """Result of safety analysis on a command AST."""
+    is_safe: bool
+    capabilities: Set[ToolCapability]
+    risk_factors: List[str]
+    reason: str = ""
+
+
 # Read-only commands that never need approval
 READ_ONLY_COMMANDS = frozenset({
     "ls", "cat", "head", "tail", "wc", "grep", "rg", "find", "pwd",
@@ -144,11 +153,7 @@ def is_read_only_command(command: str) -> bool:
         return True
 
     # Git safe subcommands
-    if first == "git" and len(tokens) > 1 and tokens[1] in {
-        "status", "log", "diff", "show", "branch", "remote", "rev-parse",
-        "ls-files", "ls-remote", "cat-file", "verify-commit", "verify-tag",
-        "describe", "blame", "shortlog", "grep", "archive",
-    }:
+    if first == "git" and len(tokens) > 1 and tokens[1] in SAFE_GIT_SUBCOMMANDS:
         return True
 
     return False
@@ -156,9 +161,9 @@ def is_read_only_command(command: str) -> bool:
 
 def _has_destructive_patterns(command: str) -> bool:
     """Check for destructive patterns in command."""
+    import re
     cmd_lower = command.lower()
     for pattern, desc in DESTRUCTIVE_PATTERNS:
-        import re
         if re.search(pattern, cmd_lower, re.IGNORECASE):
             return True
     return False
@@ -179,45 +184,45 @@ def _has_metacharacters(command: str) -> bool:
     return False
 
 
-def _resolve_run_command_capabilities(args: dict) -> list:
+def _resolve_run_command_capabilities(args: dict) -> List[ToolCapability]:
     """Resolve capabilities for run_command based on the command."""
     from app.tools.models import ToolCapability
     
     cmd = args.get("command", "").strip()
     if not cmd:
-        return ["execute"]
+        return [ToolCapability.EXECUTE]
     
     # Check for destructive patterns
     if _has_destructive_patterns(cmd):
-        return ["destructive"]
+        return [ToolCapability.DESTRUCTIVE]
     
     # Check for network commands
     first_token = cmd.split()[0] if cmd.strip() else ""
     if first_token in {"curl", "wget", "ssh", "scp", "rsync", "nc", "netcat", "ssh", "scp", "sftp", "ftp", "telnet", "ssh", "dig", "nslookup", "host", "ping", "traceroute"}:
-        return ["network"]
+        return [ToolCapability.NETWORK]
     
     # Check for system commands
     first_token = cmd.split()[0].split('/')[-1] if cmd.strip() else ""
     if first_token in {"systemctl", "service", "systemctl", "service", "systemctl", "mount", "umount", "apt", "apt-get", "apt", "yum", "dnf", "pacman", "brew", "pip", "pip3", "npm", "yarn", "pnpm", "cargo", "go", "make", "cmake", "ninja", "docker", "podman", "kubectl", "helm"}:
-        return ["system"]
+        return [ToolCapability.SYSTEM]
     
     # Check for network commands
     if first_token in {"curl", "wget", "ssh", "scp", "rsync", "nc", "netcat", "ncat", "ssh", "scp", "rsync", "nc", "nmap", "dig", "nslookup", "host", "ping", "traceroute"}:
-        return ["network"]
+        return [ToolCapability.NETWORK]
     
     # Check for destructive patterns
     if _has_destructive_patterns(cmd):
-        return ["destructive"]
+        return [ToolCapability.DESTRUCTIVE]
     
     # Check for metacharacters
     if _has_metacharacters(cmd):
-        return ["execute"]
+        return [ToolCapability.EXECUTE]
     
     # Check if read-only
     if is_read_only_command(cmd):
-        return ["read"]
+        return [ToolCapability.READ]
     
-    return ["execute"]
+    return [ToolCapability.EXECUTE]
 
 
 def _has_destructive_patterns(command: str) -> bool:
@@ -225,7 +230,21 @@ def _has_destructive_patterns(command: str) -> bool:
     import re
     cmd_lower = command.lower()
     for pattern, desc in DESTRUCTIVE_PATTERNS:
-        import re
         if re.search(pattern, cmd_lower, re.IGNORECASE):
+            return True
+    return False
+
+
+def _has_metacharacters(command: str) -> bool:
+    """Check for shell metacharacters that indicate complex operations."""
+    # Only check outside of quotes
+    in_single = False
+    in_double = False
+    for i, ch in enumerate(command):
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif not in_single and not in_double and ch in METACHARACTERS:
             return True
     return False
