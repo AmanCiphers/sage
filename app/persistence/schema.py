@@ -1,8 +1,10 @@
 """SQLite schema for SAGE.
 
 One database holds everything (ArchitectureV2 §49). Tables are created
-idempotently at startup; there is no migration framework yet.
+idempotently at startup; migrations run additive upgrades.
 """
+
+from app.persistence.migrations import run_all_migrations
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS messages (
@@ -12,7 +14,9 @@ CREATE TABLE IF NOT EXISTS messages (
     tool_calls_json TEXT,
     tool_call_id   TEXT,
     api_content    TEXT,
-    created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    token_count    INTEGER,
+    model_id       TEXT
 );
 
 CREATE TABLE IF NOT EXISTS session_state (
@@ -88,6 +92,33 @@ ON message_embeddings(model);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
 USING fts5(content, role UNINDEXED);
+
+-- Skills tables (created by migration 2)
+CREATE TABLE IF NOT EXISTS skills (
+    skill_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    content TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    author TEXT,
+    tags_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_skills_name ON skills(name);
+
+CREATE TABLE IF NOT EXISTS skill_versions (
+    skill_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    description TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_by TEXT,
+    PRIMARY KEY (skill_id, version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_skill_versions_skill ON skill_versions(skill_id);
 """
 
 
@@ -96,33 +127,12 @@ async def initialize_schema(database) -> None:
     await database.connection.execute(
         "INSERT OR IGNORE INTO session_state (id) VALUES (1)"
     )
-    await _ensure_columns(database)
     await _backfill_fts(database)
     await database.commit()
-
-
-async def _ensure_columns(database) -> None:
-    """Additive column upgrades for databases created before a field
-    existed (there is no migration framework yet — D23)."""
-
-    wanted = {
-        "tasks": {
-            "verification": "TEXT",
-            "verification_detail": "TEXT",
-            "started_at": "TEXT",
-            "completed_at": "TEXT",
-            "worker": "TEXT"
-        }
-    }
-
-    for table, columns in wanted.items():
-        cursor = await database.execute(f"PRAGMA table_info({table})")
-        existing = {row[1] for row in await cursor.fetchall()}
-        for name, decl in columns.items():
-            if name not in existing:
-                await database.execute(
-                    f"ALTER TABLE {table} ADD COLUMN {name} {decl}"
-                )
+    
+    # Run additive migrations
+    from app.persistence.migrations import run_all_migrations
+    await run_all_migrations(database)
 
 
 async def _backfill_fts(database) -> None:
