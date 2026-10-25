@@ -22,6 +22,20 @@ from app.tools.models import ToolCapability, ToolDefinition
 from app.tools.workspace import current_employee_key
 
 
+# Risk order for capabilities (lower = lower risk, processed first)
+CAPABILITY_RISK_ORDER = {
+    ToolCapability.READ: 10,
+    ToolCapability.NETWORK: 20,
+    ToolCapability.WRITE: 30,
+    ToolCapability.NETWORK_ADMIN: 40,
+    ToolCapability.STORAGE: 40,
+    ToolCapability.EXECUTE: 50,
+    ToolCapability.PROCESS: 50,
+    ToolCapability.SYSTEM: 60,
+    ToolCapability.DESTRUCTIVE: 100,
+}
+
+
 class PermissionEngine:
     """
     Deterministic permission engine with layered defense.
@@ -47,6 +61,22 @@ class PermissionEngine:
 
         # Circuit breaker for smart guardian denials (delegated to smart guardian)
 
+    def _get_capability_policy(self, cap: ToolCapability) -> str:
+        """Get approval policy for a capability."""
+        if cap == ToolCapability.READ:
+            return "auto_allow" if self.config.auto_allow_read else "session_allow"
+        elif cap == ToolCapability.WRITE:
+            return "session_allow" if self.config.session_allow_write else "explicit"
+        elif cap == ToolCapability.EXECUTE:
+            return "explicit" if self.config.explicit_destructive else "session_allow"
+        elif cap == ToolCapability.DESTRUCTIVE:
+            return "explicit"
+        elif cap in (ToolCapability.NETWORK, ToolCapability.NETWORK_ADMIN):
+            return "explicit" if self.config.explicit_destructive else "session_allow"
+        elif cap in (ToolCapability.SYSTEM, ToolCapability.STORAGE, ToolCapability.PROCESS, ToolCapability.NETWORK_ADMIN):
+            return "explicit"
+        return "explicit"
+
     def check(self, tool: ToolDefinition, arguments: dict | None = None) -> PermissionDecision:
         """Synchronous check - returns decision or APPROVAL_REQUIRED."""
         result = self._check_internal(tool, arguments or {})
@@ -58,7 +88,7 @@ class PermissionEngine:
         return result.decision
 
     def _check_internal(self, tool: ToolDefinition, arguments: dict) -> PermissionResult:
-        """Internal synchronous check."""
+        """Internal synchronous check using capability-based policies."""
         # 1. Build request
         request = PermissionRequest(
             tool_name=tool.name,
@@ -66,6 +96,12 @@ class PermissionEngine:
             destructive=tool.destructive,
             arguments=arguments,
         )
+
+        # 1.5. Resolve capabilities for this invocation
+        if tool.resolve_capabilities:
+            invocation_caps = tool.resolve_capabilities(arguments)
+        else:
+            invocation_caps = tool.capabilities
 
         # 2. Bypass checks
         bypass_result = self._check_bypass(request)
@@ -77,23 +113,58 @@ class PermissionEngine:
         if self.allowlist.is_allowed(pattern_key):
             return PermissionResult(decision=PermissionDecision.ALLOWED, pattern_key=pattern_key)
 
-        # 4. Read-only fast path
+        # 4. Capability-based approval policies
+        # Check capabilities in order of increasing risk
+        for cap in sorted(invocation_caps, key=lambda c: CAPABILITY_RISK_ORDER.get(c, 999)):
+            policy = self._get_capability_policy(cap)
+            if policy == "auto_allow":
+                return PermissionResult(decision=PermissionDecision.ALLOWED, pattern_key=None)
+            elif policy == "session_allow":
+                if self.allowlist.is_allowed(pattern_key):
+                    return PermissionResult(decision=PermissionDecision.ALLOWED, pattern_key=pattern_key)
+                return self._create_approval_required(
+                    (True, request.tool_name, f"{cap.value} requires session approval"),
+                    request
+                )
+            elif policy == "explicit":
+                return self._create_approval_required(
+                    (True, request.tool_name, f"{cap.value} requires explicit approval"),
+                    request
+                )
+            elif policy == "deny":
+                return PermissionResult(
+                    decision=PermissionDecision.DENIED,
+                    pattern_key=pattern_key,
+                    message=f"{cap.value} is not permitted"
+                )
+
+        # 2. Bypass checks (legacy, kept for compatibility)
+        bypass_result = self._check_bypass(request)
+        if bypass_result.decision == PermissionDecision.ALLOWED:
+            return bypass_result
+
+        # 3. Allowlist check
+        pattern_key = self._get_pattern_key(request)
+        if self.allowlist.is_allowed(pattern_key):
+            return PermissionResult(decision=PermissionDecision.ALLOWED, pattern_key=pattern_key)
+
+        # 3. Read-only fast path (legacy)
         if self._is_read_only(request):
             return PermissionResult(decision=PermissionDecision.ALLOWED, pattern_key=pattern_key)
 
-        # 5. Danger detection
+        # 4. Danger detection
         danger_result = self._check_danger(request)
         if danger_result:
             return self._create_approval_required(danger_result, request)
 
-        # 6. Destructive tool
+        # 5. Destructive tool
         if request.destructive:
             return self._create_approval_required(
                 (True, request.tool_name, f"destructive tool: {request.tool_name}"),
                 request
             )
 
-        # 7. External side effect
+        # 6. External side effect
         if self._get_classification_value(request.classification) == "external_side_effect":
             return self._create_approval_required(
                 (True, request.tool_name, f"external side effect: {request.tool_name}"),
