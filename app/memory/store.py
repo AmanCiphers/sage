@@ -75,6 +75,34 @@ class MemoryStore:
         self._write("")
         return "Memory cleared."
 
+    def status(self) -> dict:
+        """Get memory status with sizes for each entry."""
+        content = self.load()
+        used_chars = len(content)
+        free_chars = self.max_chars - used_chars
+        percent_used = (used_chars / self.max_chars * 100) if self.max_chars > 0 else 0
+        
+        entries_list = self.entries()
+        entry_sizes = []
+        for entry in entries_list:
+            entry_size = len(entry) + 2  # +2 for "- " prefix
+            entry_sizes.append({
+                "text": entry,
+                "chars": entry_size
+            })
+        
+        # Sort by size descending
+        entry_sizes.sort(key=lambda x: x["chars"], reverse=True)
+        
+        return {
+            "used_chars": used_chars,
+            "max_chars": self.max_chars,
+            "free_chars": free_chars,
+            "percent_used": round(percent_used, 1),
+            "entry_count": len(entries_list),
+            "entries": entry_sizes
+        }
+
     @staticmethod
     def _render(entries: list[str]) -> str:
         if not entries:

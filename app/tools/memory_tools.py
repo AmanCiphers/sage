@@ -15,7 +15,7 @@ from app.tools.schemas import ToolInput
 
 
 class MemoryInput(ToolInput):
-    action: str  # "add" | "remove" | "list" | "clear"
+    action: str  # "add" | "remove" | "list" | "clear" | "status"
     text: str | None = None
 
 
@@ -40,21 +40,22 @@ def register_memory_tools(registry, memory_store: MemoryStore) -> None:
             if not text:
                 return json.dumps({"error": "text is required for add"})
             result = store.add(text)
+            return json.dumps({"result": result, "status": store.status()})
         elif action == "remove":
             if not text:
                 return json.dumps({"error": "text is required for remove"})
             result = store.remove(text)
+            return json.dumps({"result": result, "status": store.status()})
         elif action == "list":
             result = store.load() or "(memory is empty)"
+            return json.dumps({"result": result, "status": store.status()})
         elif action == "clear":
             result = store.clear()
+            return json.dumps({"result": result, "status": store.status()})
+        elif action == "status":
+            return json.dumps({"result": "Memory status retrieved", "status": store.status()})
         else:
             return json.dumps({"error": f"unknown action: {action}"})
-
-        if result.startswith("Error"):
-            return json.dumps({"error": result})
-
-        return json.dumps({"result": result})
 
     registry.register(
         ToolDefinition(
