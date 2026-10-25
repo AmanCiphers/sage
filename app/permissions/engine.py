@@ -18,7 +18,7 @@ from app.permissions.models import (
     SmartVerdict,
 )
 from app.permissions.smart import SmartGuardian, get_smart_guardian
-from app.tools.models import ToolDefinition
+from app.tools.models import ToolCapability, ToolDefinition
 from app.tools.workspace import current_employee_key
 
 
@@ -113,36 +113,73 @@ class PermissionEngine:
         return PermissionResult(decision=PermissionDecision.ALLOWED, pattern_key=pattern_key)
 
     async def _check_async_internal(self, tool: ToolDefinition, arguments: dict) -> PermissionResult:  # noqa: E501
-        """Internal async check with smart guardian."""
+        """Internal async check with smart guardian PRE-approval."""
+        # 1. First run deterministic checks
         result = self._check_internal(tool, arguments)
 
-        # If approval required and smart guardian available, run it
-        if result.decision == PermissionDecision.APPROVAL_REQUIRED and self.smart_guardian:
-            smart_result = await self._run_smart_guardian(result, arguments)
-            if smart_result.verdict == SmartVerdict.APPROVE:
-                return PermissionResult(
-                    decision=PermissionDecision.ALLOWED,
-                    pattern_key=result.pattern_key,
-                    smart_verdict=SmartVerdict.APPROVE.value
-                )
-            elif smart_result.verdict == SmartVerdict.DENY:
-                return PermissionResult(
-                    decision=PermissionDecision.DENIED,
-                    pattern_key=result.pattern_key,
-                    description=result.description,
-                    message=f"Smart guardian denied: {smart_result.reasoning}",
-                    smart_verdict=SmartVerdict.DENY.value
-                )
-            elif smart_result.verdict == SmartVerdict.DENY and self._check_circuit_breaker():
-                # Circuit breaker triggered - hard stop
-                return PermissionResult(
-                    decision=PermissionDecision.DENIED,
-                    pattern_key=result.pattern_key,
-                    description=result.description,
-                    message=f"Circuit breaker: {self.config.denial_breaker_threshold} consecutive smart denials",  # noqa: E501
-                    smart_verdict=SmartVerdict.DENY.value
-                )
-            # ESCALATE falls through to human approval
+        # 2. If deterministic checks pass (ALLOWED), check if smart guardian should run pre-approval
+        if result.decision == PermissionDecision.ALLOWED:
+            # Check if smart guardian should run pre-approval for this capability level
+            if (self.config.smart_guardian_pre_approval 
+                and self.smart_guardian 
+                and tool.capabilities):
+                
+                # Check if any capability warrants smart guardian review
+                high_risk_caps = {
+                    ToolCapability.EXECUTE, ToolCapability.NETWORK, 
+                    ToolCapability.SYSTEM, ToolCapability.DESTRUCTIVE,
+                    ToolCapability.NETWORK_ADMIN, ToolCapability.STORAGE,
+                    ToolCapability.PROCESS
+                }
+                needs_smart_review = any(c in tool.capabilities for c in high_risk_caps)
+                
+                if needs_smart_review:
+                    smart_result = await self._run_smart_guardian_pre_approval(
+                        tool, arguments, tool.capabilities
+                    )
+                    if smart_result.verdict == SmartVerdict.APPROVE:
+                        return PermissionResult(
+                            decision=PermissionDecision.ALLOWED,
+                            pattern_key=None,
+                            smart_verdict=SmartVerdict.APPROVE.value
+                        )
+                    elif smart_result.verdict == SmartVerdict.DENY:
+                        return PermissionResult(
+                            decision=PermissionDecision.DENIED,
+                            pattern_key=None,
+                            description="Smart guardian denied",
+                            message=f"Smart guardian denied: {smart_result.reasoning}",
+                            smart_verdict=SmartVerdict.DENY.value
+                        )
+                    # ESCALATE falls through to normal flow
+
+        # 3. If we reach here, check if approval is required
+        if result.decision == PermissionDecision.APPROVAL_REQUIRED:
+            # Run smart guardian as fallback for approval-required cases
+            if self.smart_guardian:
+                smart_result = await self._run_smart_guardian_fallback(arguments)
+                if smart_result.verdict == SmartVerdict.APPROVE:
+                    return PermissionResult(
+                        decision=PermissionDecision.ALLOWED,
+                        pattern_key=result.pattern_key,
+                        smart_verdict=SmartVerdict.APPROVE.value
+                    )
+                elif smart_result.verdict == SmartVerdict.DENY:
+                    return PermissionResult(
+                        decision=PermissionDecision.DENIED,
+                        pattern_key=result.pattern_key,
+                        description=result.description,
+                        message=f"Smart guardian denied: {smart_result.reasoning}",
+                        smart_verdict=SmartVerdict.DENY.value
+                    )
+                elif smart_result.verdict == SmartVerdict.DENY and self._check_circuit_breaker():
+                    return PermissionResult(
+                        decision=PermissionDecision.DENIED,
+                        pattern_key=result.pattern_key,
+                        description=result.description,
+                        message=f"Circuit breaker: {self.config.denial_breaker_threshold} consecutive smart denials",  # noqa: E501
+                        smart_verdict=SmartVerdict.DENY.value
+                    )
 
         return result
 
@@ -243,6 +280,48 @@ class PermissionEngine:
         except Exception:
             # Smart guardian failure = escalate to human
             return SmartVerdict(verdict=SmartVerdict.ESCALATE, reasoning="Smart guardian error")
+
+    async def _run_smart_guardian_pre_approval(
+        self, 
+        tool: ToolDefinition, 
+        arguments: dict, 
+        capabilities: list[ToolCapability]
+    ) -> SmartVerdict:
+        """Run smart guardian for PRE-approval (before approval decision)."""
+        if not self.smart_guardian:
+            return SmartVerdict(verdict=SmartVerdict.ESCALATE)
+
+        # Build context for pre-approval
+        objective = arguments.get("objective", f"Execute {tool.name}")
+        
+        prompt = f"""Analyze this tool invocation for safety BEFORE approval decision:
+
+Tool: {tool.name}
+Capabilities: {[c.value for c in capabilities]}
+Arguments: {arguments}
+Objective: {objective}
+
+Determine if this action is safe to AUTO-APPROVE.
+Consider: destructiveness, reversibility, scope of impact, user intent.
+
+Respond with JSON:
+{{
+  "verdict": "approve" | "deny" | "escalate",
+  "reasoning": "brief explanation",
+  "confidence": 0.0-1.0
+}}
+
+Be strict but fair. If uncertain, escalate."""
+
+        try:
+            verdict = await self.smart_guardian.assess(
+                command=arguments.get("command", "") if arguments else "",
+                description=f"Pre-approval check for {tool.name}: {objective}",
+                pattern_keys=[tool.name],
+            )
+            return verdict
+        except Exception:
+            return SmartVerdict(verdict=SmartVerdict.ESCALATE, reasoning="Smart guardian pre-approval error")
 
     def _check_circuit_breaker(self) -> bool:
         """Check if circuit breaker is triggered (delegates to smart guardian)."""
