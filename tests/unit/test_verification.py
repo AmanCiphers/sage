@@ -32,35 +32,35 @@ def workspace(tmp_path, monkeypatch):
 # --- deterministic verifiers (ArchitectureV2 §60-61) ---
 
 
-def test_verify_write_file_pass(tmp_path):
+async def test_verify_write_file_pass(tmp_path):
     (tmp_path / "a.md").write_text("hello")
 
-    v = verify("write_file", {"path": "a.md", "content": "hello"}, "{}")
+    v = await verify("write_file", {"path": "a.md", "content": "hello"}, "{}")
 
     assert v.status == "passed"
     assert all(c["ok"] for c in v.checks)
 
 
-def test_verify_write_file_content_mismatch(tmp_path):
+async def test_verify_write_file_content_mismatch(tmp_path):
     (tmp_path / "a.md").write_text("WRONG")
 
-    v = verify("write_file", {"path": "a.md", "content": "hello"}, "{}")
+    v = await verify("write_file", {"path": "a.md", "content": "hello"}, "{}")
 
     assert v.status == "failed"
     assert "content_matches" in v.detail
 
 
-def test_verify_write_file_missing_file(tmp_path):
-    v = verify("write_file", {"path": "ghost.md", "content": "x"}, "{}")
+async def test_verify_write_file_missing_file(tmp_path):
+    v = await verify("write_file", {"path": "ghost.md", "content": "x"}, "{}")
 
     assert v.status == "failed"
     assert "file_exists" in v.detail
 
 
-def test_verify_patch_pass(tmp_path):
+async def test_verify_patch_pass(tmp_path):
     (tmp_path / "a.md").write_text("version 2")
 
-    v = verify(
+    v = await verify(
         "patch",
         {"path": "a.md", "old_text": "version 1", "new_text": "version 2"},
         "{}",
@@ -69,10 +69,10 @@ def test_verify_patch_pass(tmp_path):
     assert v.status == "passed"
 
 
-def test_verify_patch_stale_text_still_present(tmp_path):
+async def test_verify_patch_stale_text_still_present(tmp_path):
     (tmp_path / "a.md").write_text("version 1")
 
-    v = verify(
+    v = await verify(
         "patch",
         {"path": "a.md", "old_text": "version 1", "new_text": "version 2"},
         "{}",
@@ -81,8 +81,8 @@ def test_verify_patch_stale_text_still_present(tmp_path):
     assert v.status == "failed"
 
 
-def test_verify_run_command_exit_zero():
-    v = verify(
+async def test_verify_run_command_exit_zero():
+    v = await verify(
         "run_command",
         {"command": "echo hi"},
         json.dumps({"exit_code": 0, "stdout": "hi\n", "stderr": ""}),
@@ -91,8 +91,8 @@ def test_verify_run_command_exit_zero():
     assert v.status == "passed"
 
 
-def test_verify_run_command_nonzero_exit():
-    v = verify(
+async def test_verify_run_command_nonzero_exit():
+    v = await verify(
         "run_command",
         {"command": "exit 3"},
         json.dumps({"exit_code": 3, "stdout": "", "stderr": ""}),
@@ -102,8 +102,8 @@ def test_verify_run_command_nonzero_exit():
     assert "exit_code=3" in v.detail
 
 
-def test_verify_run_command_timeout_is_failed():
-    v = verify(
+async def test_verify_run_command_timeout_is_failed():
+    v = await verify(
         "run_command",
         {"command": "sleep 5"},
         json.dumps({"error": "timed out after 1s"}),
@@ -112,8 +112,8 @@ def test_verify_run_command_timeout_is_failed():
     assert v.status == "failed"
 
 
-def test_verify_unknown_tool_is_unverified_not_passed():
-    v = verify("get_current_time", {}, "{}")
+async def test_verify_unknown_tool_is_unverified_not_passed():
+    v = await verify("get_current_time", {}, "{}")
 
     assert v.status == "unverified"
     assert v.checks == []

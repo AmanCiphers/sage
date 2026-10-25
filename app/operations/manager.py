@@ -68,7 +68,7 @@ class OperationManager:
             output = str(result.output)[:RESULT_CAP_CHARS]
             # Outcomes are re-checked against real state before the
             # operation counts as successful (ArchitectureV2 §60).
-            verification = verify(tool_name, arguments, result.output)
+            verification = await verify(tool_name, arguments, result.output)
             if verification.status == "failed":
                 logger.warning(
                     "operation_verification_failed operation_id=%s detail=%s",
