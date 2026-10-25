@@ -55,6 +55,20 @@ def test_unrelated_event_ignored():
     assert _event_line(event) is None
 
 
+def test_reminder_is_a_sound_event():
+    from app.notifications.os import _SOUND_EVENTS
+
+    assert "reminder" in _SOUND_EVENTS
+    assert EventTypes.SCHEDULED_JOB_COMPLETED in _SOUND_EVENTS
+    assert EventTypes.PROACTIVE_ACTION_TAKEN in _SOUND_EVENTS
+
+
+def test_employee_finished_is_not_a_sound_event():
+    from app.notifications.os import _SOUND_EVENTS
+
+    assert EventTypes.EMPLOYEE_FINISHED not in _SOUND_EVENTS
+
+
 @pytest.mark.skipif(True, reason="requires a real OS display")
 def test_os_notify_delivers():
     from app.notifications.os import os_notify

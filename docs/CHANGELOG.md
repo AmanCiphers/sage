@@ -397,6 +397,13 @@ Changes from the web-UI integration work that were **not** recorded in
 - **Files:** `app/cli_tui.py`, `main.py`
 - **Why:** The TUI couldn't approve actions (a real functional gap — `run_command` approvals went nowhere). The chat area is also more readable with clear message separation and a toggleable status panel.
 
+## A32 — Reminders/scheduled/proactive notifications now play sound  *(2026-10-25)*
+
+- **Area:** Notifications
+- **Change:** `OsNotifier` now sends **sounding** notifications for reminders, scheduled jobs, and proactive actions (`_SOUND_EVENTS` set), matching the SAGE-initiated `send_notification` behavior. Employee completions and task failures stay silent (avoid noise).
+- **Files:** `app/notifications/os.py`, `tests/unit/test_os_notifications.py`
+- **Why:** Earlier the auto-notifier sent everything silently, so a scheduled reminder produced no chime even though `send_notification` did. Users expect an audible nudge for reminders and scheduled work.
+
 ---
 
 # Part B — Proposed: Employee Workers

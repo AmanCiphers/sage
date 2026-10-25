@@ -140,14 +140,25 @@ def _event_line(event: Event) -> str | None:
     return f"{name} finished {task_id} — {payload.get('summary') or 'finished the assigned work'}"
 
 
+# Event types that should play a sound (user-requested attention): reminders,
+# scheduled jobs, and proactive actions. Employee completions / task failures
+# stay silent to avoid noise.
+_SOUND_EVENTS = {
+    "reminder",
+    EventTypes.SCHEDULED_JOB_TRIGGERED,
+    EventTypes.SCHEDULED_JOB_COMPLETED,
+    EventTypes.PROACTIVE_ACTION_TAKEN,
+}
+
+
 class OsNotifier:
-    """Listens to the event bus and sends silent desktop notifications."""
+    """Listens to the event bus and sends desktop notifications."""
 
     async def handle_event(self, event: Event) -> None:
         line = _event_line(event)
         if not line:
             return
-        # Strip leading emoji for a cleaner OS title.
         title = "SAGE"
-        os_notify(title, line, sound=False)
-        logger.debug("os_notification_sent event=%s", event.event_type)
+        sound = event.event_type in _SOUND_EVENTS
+        os_notify(title, line, sound=sound)
+        logger.debug("os_notification_sent event=%s sound=%s", event.event_type, sound)
