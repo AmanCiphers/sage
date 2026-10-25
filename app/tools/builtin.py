@@ -1,13 +1,13 @@
 import json
 from datetime import datetime
-from typing import Any
+from typing import Any, List
 
 from pydantic import Field
 
 from app.permissions.detection import is_read_only_command
 from app.skills.tools import register_skill_tools
 
-from .models import ToolClassification, ToolDefinition
+from .models import ToolCapability, ToolClassification, ToolDefinition
 from .schemas import ToolInput
 
 
@@ -375,6 +375,7 @@ def register_builtin_tools(registry, supervisor=None) -> None:
             input_schema=CurrentTimeInput,
             destructive=False,
             employee_eligible=False,
+            capabilities=[ToolCapability.READ],
             handler=get_current_time,
         )
     )
@@ -387,6 +388,7 @@ def register_builtin_tools(registry, supervisor=None) -> None:
             input_schema=CurrentDateInput,
             destructive=False,
             employee_eligible=False,
+            capabilities=[ToolCapability.READ],
             handler=get_current_date,
         )
     )
@@ -405,6 +407,7 @@ def register_builtin_tools(registry, supervisor=None) -> None:
             input_schema=AnalyzeInput,
             destructive=False,
             employee_eligible=True,
+            capabilities=[ToolCapability.READ, ToolCapability.EXECUTE],
             handler=analyze,
         )
     )
@@ -429,6 +432,7 @@ def register_builtin_tools(registry, supervisor=None) -> None:
             input_schema=RunOpenCodeInput,
             destructive=False,
             employee_eligible=True,
+            capabilities=[ToolCapability.EXECUTE, ToolCapability.WRITE, ToolCapability.READ, ToolCapability.NETWORK],
             requires_approval=_agent_requires_approval,
             handler=run_opencode,
         )
@@ -448,6 +452,7 @@ def register_builtin_tools(registry, supervisor=None) -> None:
             input_schema=RunHermesInput,
             destructive=False,
             employee_eligible=True,
+            capabilities=[ToolCapability.EXECUTE, ToolCapability.READ, ToolCapability.NETWORK],
             requires_approval=_agent_requires_approval,
             handler=run_hermes,
         )
@@ -537,6 +542,7 @@ def register_builtin_tools(registry, supervisor=None) -> None:
             input_schema=AssignTaskInput,
             destructive=False,
             employee_eligible=False,
+            capabilities=[ToolCapability.EXECUTE, ToolCapability.NETWORK],
             handler=assign_task,
         )
     )
@@ -552,6 +558,7 @@ def register_builtin_tools(registry, supervisor=None) -> None:
             input_schema=TaskStatusInput,
             destructive=False,
             employee_eligible=False,
+            capabilities=[ToolCapability.READ],
             handler=task_status,
         )
     )
@@ -575,6 +582,7 @@ def register_builtin_tools(registry, supervisor=None) -> None:
             input_schema=AwaitTaskInput,
             destructive=False,
             employee_eligible=False,
+            capabilities=[ToolCapability.READ],
             handler=await_task,
         )
     )
@@ -602,6 +610,7 @@ def register_builtin_tools(registry, supervisor=None) -> None:
             input_schema=ScheduleJobInput,
             destructive=False,
             employee_eligible=False,
+            capabilities=[ToolCapability.SYSTEM],
             requires_approval=_scheduler_requires_approval,
             handler=None,  # Set by application after scheduler init
         )
@@ -615,6 +624,7 @@ def register_builtin_tools(registry, supervisor=None) -> None:
             input_schema=ListJobsInput,
             destructive=False,
             employee_eligible=False,
+            capabilities=[ToolCapability.READ, ToolCapability.SYSTEM],
             requires_approval=_scheduler_requires_approval,
             handler=None,  # Set by application after scheduler init
         )
@@ -628,6 +638,7 @@ def register_builtin_tools(registry, supervisor=None) -> None:
             input_schema=EnableJobInput,
             destructive=False,
             employee_eligible=False,
+            capabilities=[ToolCapability.SYSTEM],
             requires_approval=_enable_disable_requires_approval,
             handler=None,  # Set by application after scheduler init
         )
@@ -641,6 +652,7 @@ def register_builtin_tools(registry, supervisor=None) -> None:
             input_schema=RemoveJobInput,
             destructive=False,
             employee_eligible=False,
+            capabilities=[ToolCapability.SYSTEM],
             requires_approval=_scheduler_requires_approval,
             handler=None,  # Set by application after scheduler init
         )
@@ -657,6 +669,7 @@ def register_builtin_tools(registry, supervisor=None) -> None:
             input_schema=AddProactiveRuleInput,
             destructive=False,
             employee_eligible=False,
+            capabilities=[ToolCapability.SYSTEM, ToolCapability.NETWORK],
             requires_approval=_proactive_requires_approval,
             handler=None,  # Set by application after proactive init
         )
@@ -670,6 +683,7 @@ def register_builtin_tools(registry, supervisor=None) -> None:
             input_schema=ListRulesInput,
             destructive=False,
             employee_eligible=False,
+            capabilities=[ToolCapability.READ, ToolCapability.SYSTEM],
             requires_approval=_scheduler_requires_approval,
             handler=None,  # Set by application after proactive init
         )
@@ -683,6 +697,7 @@ def register_builtin_tools(registry, supervisor=None) -> None:
             input_schema=EnableRuleInput,
             destructive=False,
             employee_eligible=False,
+            capabilities=[ToolCapability.SYSTEM],
             requires_approval=_enable_disable_requires_approval,
             handler=None,  # Set by application after proactive init
         )
@@ -696,6 +711,7 @@ def register_builtin_tools(registry, supervisor=None) -> None:
             input_schema=RemoveRuleInput,
             destructive=False,
             employee_eligible=False,
+            capabilities=[ToolCapability.SYSTEM],
             requires_approval=_proactive_requires_approval,
             handler=None,  # Set by application after proactive init
         )

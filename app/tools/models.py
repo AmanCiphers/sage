@@ -1,8 +1,20 @@
 from collections.abc import Callable
 from enum import Enum
-from typing import Any
+from typing import Any, List
 
 from pydantic import BaseModel, ConfigDict
+
+
+class ToolCapability(str, Enum):  # noqa: UP042
+    READ = "read"
+    WRITE = "write"
+    EXECUTE = "execute"
+    NETWORK = "network"
+    SYSTEM = "system"
+    DESTRUCTIVE = "destructive"
+    NETWORK_ADMIN = "network_admin"
+    STORAGE = "storage"
+    PROCESS = "process"
 
 
 class ToolClassification(str, Enum):  # noqa: UP042
@@ -20,6 +32,11 @@ class ToolDefinition(BaseModel):
     input_schema: type[BaseModel] | None = None
     destructive: bool = False
     employee_eligible: bool = True
+
+    # New capability system
+    capabilities: List[ToolCapability] = []
+    # Per-invocation capability resolution (optional)
+    resolve_capabilities: Callable[..., List[ToolCapability]] | None = None
 
     # Optional dynamic check: given the parsed arguments, return True when
     # THIS particular invocation needs user approval (e.g. overwriting an

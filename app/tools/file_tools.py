@@ -1,9 +1,9 @@
-"""Basic read-only file tools: read_file, list_files."""
+"""File tools: read_file, list_files, write_file, patch."""
 
 import json
 from pathlib import Path
 
-from app.tools.models import ToolClassification, ToolDefinition
+from app.tools.models import ToolCapability, ToolClassification, ToolDefinition
 from app.tools.schemas import ToolInput
 
 MAX_READ_CHARS = 100_000
@@ -233,6 +233,7 @@ def register_file_tools(registry) -> None:
             input_schema=ReadFileInput,
             destructive=False,
             employee_eligible=True,
+            capabilities=[ToolCapability.READ],
             handler=read_file,
         )
     )
@@ -249,6 +250,7 @@ def register_file_tools(registry) -> None:
             input_schema=ListFilesInput,
             destructive=False,
             employee_eligible=True,
+            capabilities=[ToolCapability.READ],
             handler=list_files,
         )
     )
@@ -266,6 +268,7 @@ def register_file_tools(registry) -> None:
             input_schema=WriteFileInput,
             destructive=False,
             employee_eligible=True,
+            capabilities=[ToolCapability.WRITE],
             requires_approval=_write_needs_approval,
             handler=write_file,
         )
@@ -283,6 +286,7 @@ def register_file_tools(registry) -> None:
             input_schema=PatchFileInput,
             destructive=False,
             employee_eligible=True,
+            capabilities=[ToolCapability.WRITE],
             requires_approval=_write_needs_approval,
             handler=patch,
         )
