@@ -9,6 +9,7 @@ from app.feature_flags import (
     threat_scan_enabled,
     compaction_v2_enabled,
     voice_enabled,
+    memory_v2_enabled,
 )
 
 __all__ = [
@@ -20,4 +21,5 @@ __all__ = [
     "threat_scan_enabled",
     "compaction_v2_enabled",
     "voice_enabled",
+    "memory_v2_enabled",
 ]

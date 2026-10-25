@@ -81,6 +81,7 @@ class Settings(BaseSettings):
     feature_compaction_v2: bool = False
     feature_voice: bool = False
     feature_llm_verifier: bool = False
+    feature_memory_v2: bool = False
 
     # Toolset profile (coding, research, writing, verification, organization, full)
     toolset_profile: str = "full"

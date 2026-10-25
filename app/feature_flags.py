@@ -7,6 +7,7 @@ All flags default to OFF. Enable via environment variables:
     SAGE_FEATURE_THREAT_SCAN=1
     SAGE_FEATURE_COMPACTION_V2=1
     SAGE_FEATURE_VOICE=1
+    SAGE_FEATURE_MEMORY_V2=1
 """
 
 from functools import lru_cache
@@ -69,3 +70,7 @@ def compaction_v2_enabled() -> bool:
 
 def voice_enabled() -> bool:
     return get_feature_flags().is_enabled("VOICE")
+
+
+def memory_v2_enabled() -> bool:
+    return get_feature_flags().is_enabled("MEMORY_V2")
