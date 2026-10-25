@@ -31,32 +31,55 @@ class SageTui(App):
     """Textual application shell for SAGE."""
 
     CSS = """
+    #layout {
+        width: 100%;
+        height: 100%;
+    }
     #feed {
+        width: 100%;
         height: 1fr;
-        border: round $primary;
-        padding: 1;
+        border: round $primary 50%;
+        padding: 0 2;
         overflow-y: scroll;
+        background: $surface;
+    }
+    #dock {
+        width: 100%;
+        height: auto;
+        dock: bottom;
+        padding: 0 1 1 1;
     }
     #status {
-        height: 3;
-        border: round $accent;
+        width: 100%;
+        height: 1;
+        border: none;
         padding: 0 1;
+        color: $text-muted;
+        background: $surface;
     }
     #input-row {
+        width: 100%;
         height: 3;
-        padding: 0 1;
     }
     Input {
+        width: 100%;
         border: round $accent;
     }
     #thinking {
+        width: 100%;
         height: 1;
-        padding: 0 1;
+        padding: 0 2;
         color: $warning;
         display: none;
     }
     #thinking.visible {
         display: block;
+    }
+    #live-response {
+        width: 100%;
+        padding: 0 2;
+        color: $text;
+        background: $surface;
     }
     """
 
@@ -83,22 +106,23 @@ class SageTui(App):
         self._history_idx: int | None = None
         self._busy = False
         self._live_text = ""
+        self._think_task: asyncio.Task | None = None
+        self._think_idx = 0
 
     # ---- compose ----
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        with Vertical():
+        with Vertical(id="layout"):
             self.feed = RichLog(highlight=True, markup=True, wrap=True)
             yield self.feed
-            # Live streaming area for the in-progress SAGE response. RichLog
-            # cannot stream with end="" so we buffer here and commit on turn_end.
-            self._live = Static("", id="live-response")
-            yield self._live
-            yield Static("", id="thinking")
-            yield Static("", id="status")
-            with Horizontal(id="input-row"):
-                yield Input(placeholder="Message SAGE…", id="input")
+            with Vertical(id="dock"):
+                self._live = Static("", id="live-response")
+                yield self._live
+                yield Static("", id="thinking")
+                yield Static("", id="status")
+                with Horizontal(id="input-row"):
+                    yield Input(placeholder="Message SAGE…", id="input")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -122,7 +146,9 @@ class SageTui(App):
         self._history.append(message)
         self._history_idx = None
         event.input.value = ""
-        self.feed.write(f"[bold cyan]You:[/] {message}")
+        self._write_separator()
+        self.feed.write(f"[bold cyan]┃ You:[/] [bold]{message}[/]")
+        self.feed.write("")
         # Launch as a Textual worker (pass a coroutine; do NOT also @work-decorate).
         self.run_worker(self._handle_turn(message), group="turn", exclusive=False)
 
@@ -231,7 +257,7 @@ class SageTui(App):
         self._set_thinking(False)
         # Commit the buffered live response to the feed, then clear it.
         if self._live_text:
-            self.feed.write(f"[cyan]SAGE:[/] {self._live_text}")
+            self.feed.write(f"[cyan]┃ SAGE:[/] {self._live_text}")
             self._live_text = ""
             self._live.update("")
         elapsed = time.perf_counter() - getattr(self, "_turn_started", 0.0)
@@ -243,6 +269,7 @@ class SageTui(App):
         if response.model:
             stats.append(response.model)
         self.feed.write("  [dim]· [/]".join([f"[dim]{s}[/]" for s in stats]))
+        self.feed.write("")
         self._busy = False
         self._refresh_status()
 
@@ -261,10 +288,44 @@ class SageTui(App):
                 parts.append(f"{k}={s[:40]}{'…' if len(s) > 40 else ''}")
         return ", ".join(parts[:2])
 
+    def _write_separator(self) -> None:
+        width = max(20, self.size.width - 8)
+        self.feed.write(f"[dim]{'─' * width}[/]")
+
     def _set_thinking(self, on: bool) -> None:
         t = self.query_one("#thinking", Static)
         t.set_class(on, "visible")
-        t.update("⠋ thinking…" if on else "")
+        if on:
+            self._start_thinking_animation()
+        else:
+            self._stop_thinking_animation()
+
+    def _start_thinking_animation(self) -> None:
+        if self._think_task is not None:
+            return
+        frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        self._think_idx = 0
+
+        async def _animate() -> None:
+            t = self.query_one("#thinking", Static)
+            while True:
+                f = frames[self._think_idx % len(frames)]
+                t.update(f"{self.style(f)} thinking…")
+                self._think_idx += 1
+                await asyncio.sleep(0.1)
+
+        self._think_task = asyncio.create_task(_animate())
+
+    def _stop_thinking_animation(self) -> None:
+        if self._think_task is not None:
+            self._think_task.cancel()
+            self._think_task = None
+        t = self.query_one("#thinking", Static)
+        t.update("")
+
+    @staticmethod
+    def style(text: str) -> str:
+        return f"[warning]{text}[/]"
 
     def _refresh_status(self) -> None:
         status = self.query_one("#status", Static)
