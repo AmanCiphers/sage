@@ -5,7 +5,8 @@ import json
 import time
 
 from app.permissions.command_policy import is_read_only_command
-from app.tools.models import ToolClassification, ToolDefinition
+from app.tools.models import ToolCapability, ToolClassification, ToolDefinition
+from app.tools.shell_parser import _resolve_run_command_capabilities
 from app.tools.schemas import ToolInput
 
 MAX_OUTPUT_CHARS = 20_000
@@ -78,6 +79,11 @@ def _needs_approval(arguments: dict) -> bool:
 
 
 def register_shell_tools(registry) -> None:
+    def _resolve_capabilities(arguments: dict) -> list:
+        from app.tools.shell_parser import _resolve_run_command_capabilities
+        caps = _resolve_run_command_capabilities(arguments)
+        return [c.value for c in caps]
+
     registry.register(
         ToolDefinition(
             name="run_command",
@@ -93,6 +99,8 @@ def register_shell_tools(registry) -> None:
             input_schema=RunCommandInput,
             destructive=False,
             employee_eligible=True,
+            capabilities=[ToolCapability.EXECUTE],
+            resolve_capabilities=lambda args: _resolve_run_command_capabilities(args),
             requires_approval=_needs_approval,
             handler=run_command,
         )
