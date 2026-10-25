@@ -118,7 +118,8 @@ class SageTui(App):
         self._history_idx = None
         event.input.value = ""
         self.feed.write(f"[bold cyan]You:[/] {message}")
-        self.run_worker(self._handle_turn(message), exclusive=False)
+        # Launch as a Textual worker (pass a coroutine; do NOT also @work-decorate).
+        self.run_worker(self._handle_turn(message), group="turn", exclusive=False)
 
     def _on_key(self, event) -> None:
         # ↑/↓ history navigation
@@ -144,7 +145,6 @@ class SageTui(App):
 
     # ---- turn handling ----
 
-    @work
     async def _handle_turn(self, message: str) -> None:
         if self._busy:
             self.feed.write("[yellow](SAGE is busy — try again shortly)[/]")
