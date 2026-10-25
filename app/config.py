@@ -73,6 +73,12 @@ class Settings(BaseSettings):
     rag_fallback_model: str = "Qwen/Qwen3-Embedding-8B"
     rag_embedding_dim: int = 1024
 
+    # RAG Reranker (cross-encoder)
+    rag_rerank_enabled: bool = False
+    rag_rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    rag_rerank_top_n: int = 20
+    rag_rerank_batch_size: int = 16
+
     # Feature flags for v2 subsystems (default off, opt-in via env)
     feature_real_tokenizer: bool = False
     feature_parallel_tools: bool = False

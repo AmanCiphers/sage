@@ -12,6 +12,7 @@ from app.context.compressor import ContextCompressor, summary_row
 from app.embeddings import EmbeddingProvider, EmbeddingStore
 from app.memory.store import MemoryStore
 from app.persistence.store import MessageStore, SessionStateStore
+from app.reranker.provider import create_reranker
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ class ContextBuilder:
         self.embedding_provider = embedding_provider
         self.rag_enabled = rag_enabled and settings.rag_enabled
         self.logger = logger
+        self.reranker = create_reranker()
 
     async def build(self) -> list[dict]:
         state = await self.session_state.get()
@@ -102,7 +104,17 @@ class ContextBuilder:
         if not merged:
             return None
 
-        # 4. Format as context
+        # 4. Optional reranking with cross-encoder
+        if self.reranker:
+            try:
+                # Prepare candidates for reranker: list of (msg_id, score, content)
+                candidates = [(mid, score, content) for mid, score, content in merged]
+                reranked = self.reranker.rerank(query, candidates, top_n=settings.rag_rerank_top_n)
+                merged = reranked
+            except Exception as e:
+                self.logger.warning("rerank_failed error=%s", e)
+
+        # 5. Format as context
         parts = ["Relevant context from conversation history:"]
         for _msg_id, score, content in merged[: settings.rag_top_k]:
             parts.append(f"[score={score:.3f}] {content[:500]}")
