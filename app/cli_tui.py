@@ -25,7 +25,7 @@ from textual import on, work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Footer, Header, Input, RichLog, Static
+from textual.widgets import Footer, Header, Input, Markdown, Static
 
 from app.conversation.models import AssistantResponse, LoopEvent, UserMessage
 
@@ -108,9 +108,38 @@ class SageTui(App):
         width: 1fr;
         height: 100%;
         border: round $primary 50%;
-        padding: 1 2;
+        padding: 0 1;
         overflow-y: scroll;
         background: $surface;
+    }
+    #feed .msg {
+        width: 100%;
+        height: auto;
+        margin: 0 1 1 1;
+    }
+    #feed Markdown {
+        width: 100%;
+        height: auto;
+        padding: 0 2 0 0;
+    }
+    #feed .msg-user {
+        color: $text;
+    }
+    #feed .msg-sage {
+        color: $text;
+    }
+    #feed .msg-label {
+        color: $accent;
+        text-style: bold;
+        margin-bottom: 0;
+    }
+    #feed .msg-rule {
+        color: $primary 40%;
+    }
+    #feed .tool-line {
+        color: $text-muted;
+        margin-left: 1;
+        height: auto;
     }
     #side {
         width: 32;
@@ -198,6 +227,8 @@ class SageTui(App):
         self._history_idx: int | None = None
         self._busy = False
         self._live_text = ""
+        self._live = None
+        self._live_md: Vertical | None = None
         self._think_task: asyncio.Task | None = None
         self._think_idx = 0
 
@@ -207,13 +238,11 @@ class SageTui(App):
         yield Header(show_clock=True)
         with Vertical(id="layout"):
             with Horizontal(id="main"):
-                self.feed = RichLog(highlight=True, markup=True, wrap=True)
+                self.feed = Vertical(id="feed")
                 yield self.feed
                 self.side = Static("", id="side")
                 yield self.side
             with Vertical(id="dock"):
-                self._live = Static("", id="live-response")
-                yield self._live
                 yield Static("", id="thinking")
                 yield Static("", id="status")
                 with Horizontal(id="input-row"):
@@ -226,12 +255,11 @@ class SageTui(App):
         self._refresh_status()
 
     def _welcome(self) -> None:
-        self._sep()
-        self.feed.write(f"[bold green]SAGE[/] [dim]· {', '.join(self._model_ids) or 'none'}[/]")
-        self.feed.write(f"[dim]workspace: {self._workspace}[/]")
-        self.feed.write("[dim]type /help in the box · Tab for status · Ctrl+D to quit[/]")
-        self.feed.write("")
-        self._sep()
+        self._write_rule()
+        self._feed_write(f"[bold green]SAGE[/] [dim]· {', '.join(self._model_ids) or 'none'}[/]")
+        self._feed_write(f"[dim]workspace: {self._workspace}[/]")
+        self._feed_write("[dim]type /help in the box · Tab for status · Ctrl+D to quit[/]")
+        self._write_rule()
 
     # ---- input ----
 
@@ -274,7 +302,7 @@ class SageTui(App):
 
     async def _handle_turn(self, message: str) -> None:
         if self._busy:
-            self.feed.write("[yellow](SAGE is busy — try again shortly)[/]")
+            self._feed_write("[yellow](SAGE is busy — try again shortly)[/]")
             return
         self._busy = True
         self._live_text = ""
@@ -298,7 +326,7 @@ class SageTui(App):
             await self.turn_end(response)
             self._drain_notices()
         except Exception as exc:
-            self.feed.write(f"[red]✗ error:[/] {exc}")
+            self._feed_write(f"[red]✗ error:[/] {exc}")
         finally:
             self._busy = False
             self._set_thinking(False)
@@ -311,9 +339,9 @@ class SageTui(App):
         modal = ApprovalModal(tool, resource)
         decision = await self.push_screen_wait(modal)
         if decision:
-            self.feed.write(f"  [green]✓ approved[/] {tool}")
+            self._feed_write(f"  [green]✓ approved[/] {tool}")
         else:
-            self.feed.write(f"  [dim]✗ denied[/] {tool}")
+            self._feed_write(f"  [dim]✗ denied[/] {tool}")
         return bool(decision)
 
     async def _resolve_approval(self, approval: dict, approved: bool) -> AssistantResponse:
@@ -326,7 +354,7 @@ class SageTui(App):
         if cmd in ("/exit", "/quit"):
             self.exit()
             return
-        self.feed.write(f"[dim]{message}[/] — (run via CLI handler)[/]")
+        self._feed_write(f"[dim]{message}[/] — (run via CLI handler)[/]")
         self._drain_notices()
 
     # ---- loop callback surface (used by main.py to wire the loop) ----
@@ -342,36 +370,44 @@ class SageTui(App):
             name = event.tool_name or "?"
             summary = self._summarize_args(event.arguments)
             suffix = f" [dim]({summary})[/]" if summary else ""
-            self.feed.write(f"  [dim]⚙[/] [yellow]{name}[/]{suffix}")
+            self._feed_write(f"  [dim]⚙[/] [yellow]{name}[/]{suffix}")
         elif event.type == "tool_end":
             dur = f"{event.duration_ms:.0f}ms" if event.duration_ms is not None else ""
             if event.success:
-                self.feed.write(f"      [green]✓[/] [dim]{dur}[/]")
+                self._feed_write(f"      [green]✓[/] [dim]{dur}[/]")
             else:
                 err = (event.error or "failed").split("\n")[0][:100]
-                self.feed.write(f"      [red]✗[/] {err} [dim]{dur}[/]")
+                self._feed_write(f"      [red]✗[/] {err} [dim]{dur}[/]")
         elif event.type == "approval":
             target = event.resource or "target"
-            self.feed.write(
+            self._feed_write(
                 f"  [yellow]✋ approval required[/] · {event.tool_name} → "
                 f"[bold]{target}[/]"
             )
         elif event.type == "compaction":
-            self.feed.write("  [dim](compacting context…)[/]")
+            self._feed_write("  [dim](compacting context…)[/]")
 
     async def on_delta(self, text: str) -> None:
         self._set_thinking(False)
         self._live_text += text
-        self._live.update(f"[bold cyan]SAGE[/]\n{self._live_text}")
+        if self._live_md is None:
+            self._live = Markdown("")
+            self._live_md = Vertical(
+                Static("[bold cyan]SAGE[/]", classes="msg-label"),
+                self._live,
+                classes="msg msg-sage",
+            )
+            self.feed.mount(self._live_md)
+        self._live.update(self._live_text)
+        self._scroll_bottom()
 
     async def turn_end(self, response: AssistantResponse) -> None:
         self._set_thinking(False)
         if self._live_text:
-            self._write_label("SAGE")
-            self.feed.write(self._live_text)
-            self._write_divider()
+            self._write_rule()
             self._live_text = ""
-            self._live.update("")
+        self._live = None
+        self._live_md = None
         elapsed = time.perf_counter() - getattr(self, "_turn_started", 0.0)
         stats = [f"{elapsed:.1f}s"]
         if response.input_tokens or response.output_tokens:
@@ -380,30 +416,47 @@ class SageTui(App):
             stats.append(f"{i} in / {o} out")
         if response.model:
             stats.append(response.model)
-        self.feed.write("  [dim]· [/]".join([f"[dim]{s}[/]" for s in stats]))
-        self.feed.write("")
+        self._feed_write("  [dim]· [/]".join(f"[dim]{s}[/]" for s in stats))
         self._busy = False
         self._refresh_status()
 
     # ---- chat rendering ----
 
+    def _feed_write(self, rich_markup: str) -> None:
+        """Append a plain rich-text line to the feed container."""
+        self.feed.mount(Static(rich_markup, classes="msg tool-line"))
+        self._scroll_bottom()
+
     def _add_user_message(self, text: str) -> None:
-        self.feed.write("")
-        self._write_label("YOU")
-        self.feed.write(_strip_ansi(text))
-        self._write_divider()
+        self._write_rule()
+        self.feed.mount(
+            Vertical(
+                Static("[bold cyan]YOU[/]", classes="msg-label"),
+                Static(_strip_ansi(text)),
+                classes="msg msg-user",
+            )
+        )
+        self._write_rule()
+        self._scroll_bottom()
 
-    def _write_label(self, name: str) -> None:
-        self.feed.write(f"[bold cyan]{name}[/]")
+    def _add_sage_message(self, text: str) -> None:
+        self.feed.mount(
+            Vertical(
+                Static("[bold cyan]SAGE[/]", classes="msg-label"),
+                Markdown(text),
+                classes="msg msg-sage",
+            )
+        )
+        self._write_rule()
+        self._scroll_bottom()
 
-    def _write_divider(self) -> None:
+    def _write_rule(self) -> None:
         width = max(20, self.size.width - 8)
-        self.feed.write(f"[dim]{'─' * width}[/]")
-        self.feed.write("")
+        self.feed.mount(Static(f"[dim]{'─' * width}[/]", classes="msg-rule"))
+        self._scroll_bottom()
 
-    def _sep(self) -> None:
-        width = max(20, self.size.width - 8)
-        self.feed.write(f"[dim]{'─' * width}[/]")
+    def _scroll_bottom(self) -> None:
+        self.feed.scroll_end(animate=False)
 
     # ---- helpers ----
 
@@ -477,7 +530,7 @@ class SageTui(App):
         if not self._notifier:
             return
         for notice in self._notifier.drain():
-            self.feed.write(f"[dim]· {notice}[/]")
+            self._feed_write(f"[dim]· {notice}[/]")
 
     def action_quit(self) -> None:
         self.exit()

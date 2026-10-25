@@ -411,6 +411,13 @@ Changes from the web-UI integration work that were **not** recorded in
 - **Files:** `app/cli_tui.py`
 - **Why:** User requested a clearer chat layout with the sender label and a rule under it for each message.
 
+## A34 — Markdown support in the TUI chat  *(2026-10-25)*
+
+- **Area:** CLI / UI
+- **Change:** The TUI chat now renders **SAGE messages as Markdown** (via Textual's `Markdown` widget — bold, code, lists, headings render properly). The feed is a scrollable `Vertical` container that appends message widgets: user messages as `YOU:` label + plain text, SAGE messages as `SAGE:` label + `Markdown` body, with divider rules between turns. Tool/activity lines and notices are compact rich-text lines. Auto-scrolls to the newest message.
+- **Files:** `app/cli_tui.py`
+- **Why:** SAGE replies often contain code, lists, and formatting that a plain rich-text log renders as raw markup. A `Markdown` widget per message makes replies readable.
+
 ---
 
 # Part B — Proposed: Employee Workers
