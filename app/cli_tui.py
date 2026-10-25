@@ -362,13 +362,14 @@ class SageTui(App):
     async def on_delta(self, text: str) -> None:
         self._set_thinking(False)
         self._live_text += text
-        self._live.update(f"[bold cyan]SAGE:[/]\n{self._live_text}")
+        self._live.update(f"[bold cyan]SAGE[/]\n{self._live_text}")
 
     async def turn_end(self, response: AssistantResponse) -> None:
         self._set_thinking(False)
         if self._live_text:
             self._write_label("SAGE")
             self.feed.write(self._live_text)
+            self._write_divider()
             self._live_text = ""
             self._live.update("")
         elapsed = time.perf_counter() - getattr(self, "_turn_started", 0.0)
@@ -390,12 +391,15 @@ class SageTui(App):
         self.feed.write("")
         self._write_label("YOU")
         self.feed.write(_strip_ansi(text))
-        self.feed.write("")
+        self._write_divider()
 
     def _write_label(self, name: str) -> None:
-        width = max(20, self.size.width - 8)
         self.feed.write(f"[bold cyan]{name}[/]")
+
+    def _write_divider(self) -> None:
+        width = max(20, self.size.width - 8)
         self.feed.write(f"[dim]{'─' * width}[/]")
+        self.feed.write("")
 
     def _sep(self) -> None:
         width = max(20, self.size.width - 8)
