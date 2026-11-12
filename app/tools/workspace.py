@@ -15,10 +15,12 @@ so that agent tools (run_opencode, run_hermes) can route to the correct
 per-employee session database.
 
 Workspace Authorization:
-- User explicitly authorizes a workspace (directory) via `authorize_workspace()` tool
-- SAGE can freely access files within the authorized workspace
-- Access outside authorized workspace requires explicit user permission via `authorize_workspace()`
-- The authorized workspace persists for the session until changed or cleared
+- With `full_machine_access` (default), SAGE can access the whole machine.
+- User can explicitly authorize a directory via the `authorize_workspace` tool;
+  relative paths then resolve there and sensitive-file prompts inside it stop.
+- Without full-machine access, paths outside the authorized workspace are
+  rejected until the user authorizes a directory.
+- An explicit authorization persists for the process until changed or cleared.
 """
 
 from __future__ import annotations
@@ -35,6 +37,11 @@ _authorized_workspace: ContextVar[Path | None] = ContextVar(
     "sage_authorized_workspace", default=None
 )
 
+# Fallback so an authorization made in one request/turn persists for the
+# process (the user said "work in this directory"). Employee turns still
+# override their own workspace via ``use_workspace``.
+_global_authorized: Path | None = None
+
 _current_employee: ContextVar[str | None] = ContextVar(
     "sage_current_employee", default=None
 )
@@ -42,10 +49,13 @@ _current_employee: ContextVar[str | None] = ContextVar(
 
 def current_workspace() -> Path:
     """Resolve the workspace root for the current turn."""
-    
+
     override = _workspace_override.get()
     if override is not None:
         return override.expanduser().resolve()
+
+    if _global_authorized is not None:
+        return _global_authorized.expanduser().resolve()
 
     from app.config import settings
 
@@ -54,35 +64,44 @@ def current_workspace() -> Path:
 
 def authorized_workspace() -> Path | None:
     """Get the currently authorized workspace (directory user explicitly authorized)."""
-    return _authorized_workspace.get()
+    return _authorized_workspace.get() or _global_authorized
 
 
-def authorize_workspace(path: Path | str) -> Path:
+def authorize_workspace(path: Path | str, *, persistent: bool = False) -> Path:
     """Explicitly authorize a workspace (directory) for SAGE to access.
-    
+
     Returns the authorized workspace path. This grants SAGE permission to
     access files within this directory and its subdirectories without
     requiring additional permission prompts.
+
+    ``persistent=True`` (only used when the user explicitly points SAGE at
+    a directory) also makes relative paths resolve there for the process.
     """
+    global _global_authorized
     path = Path(path).expanduser().resolve()
     _authorized_workspace.set(path)
+    if persistent:
+        _global_authorized = path
     return path
 
 
 def clear_authorized_workspace() -> None:
     """Clear the authorized workspace, requiring re-authorization for any access."""
+    global _global_authorized
     _authorized_workspace.set(None)
+    _global_authorized = None
 
 
 def is_path_authorized(path: Path) -> bool:
     """Check if a path is within the authorized workspace."""
     from app.config import settings
-    
-    # Allow disabling authorization checks (for testing)
-    if settings.disable_workspace_auth:
+
+    # Allow disabling authorization checks (for testing) or granting the
+    # whole machine.
+    if settings.disable_workspace_auth or settings.full_machine_access:
         return True
-    
-    authorized = _authorized_workspace.get()
+
+    authorized = authorized_workspace()
     if authorized is None:
         return False
     try:
@@ -92,21 +111,9 @@ def is_path_authorized(path: Path) -> bool:
         return False
 
 
-def current_workspace() -> Path:
-    """Resolve the workspace root for the current turn."""
-    
-    override = _workspace_override.get()
-    if override is not None:
-        return override.expanduser().resolve()
-
-    from app.config import settings
-
-    return settings.workspace_path.expanduser().resolve()
-
-
 def use_workspace(path: Path | str):
     """Set the workspace override; returns the token for resetting."""
-    
+
     return _workspace_override.set(Path(path))
 
 

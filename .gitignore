@@ -15,3 +15,6 @@ data/
 .ruff_cache/
 
 .DS_Store
+# generated snapshots and scratch audio
+backups/
+test_api.wav

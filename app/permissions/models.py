@@ -44,14 +44,6 @@ class PermissionResult:
 
 
 @dataclass
-class SmartVerdict:
-    """Smart guardian LLM verdict."""
-    verdict: SmartVerdict
-    reasoning: str = ""
-    confidence: float = 1.0
-
-
-@dataclass
 class ApprovalPrompt:
     """Data needed to prompt user for approval."""
     pattern_key: str

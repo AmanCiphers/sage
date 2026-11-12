@@ -1,95 +1,114 @@
 """Permission engine for SAGE v2.
 
-Three-layer defense:
-1. Bypass checks (YOLO, off mode)
-2. Allowlist (session + permanent)
-3. Danger detection + smart guardian + human approval
+Layered, deterministic decision flow:
+
+1. Hardline deny (catastrophic commands — never bypassable)
+2. Explicit command risk (dangerous commands ask; ordinary commands run)
+3. Sensitive file writes (protected files outside a trusted workspace ask)
+4. Bypass (YOLO, off mode, approving context)
+5. Allowlist (session + permanent)
+6. Capability policies
+7. Smart guardian (refines ambiguous commands only)
+8. Human approval gate
 """
 
+from __future__ import annotations
 
 from app.permissions.allowlist import AllowlistManager
 from app.permissions.config import get_permission_config
 from app.permissions.context import get_current_context
-from app.permissions.detection import detect_dangerous, is_read_only_command
 from app.permissions.models import (
     PermissionDecision,
     PermissionRequest,
     PermissionResult,
     SmartVerdict,
 )
-from app.permissions.smart import SmartGuardian, get_smart_guardian
+from app.permissions.risk import (
+    RISK_ALLOW,
+    RISK_DENY,
+    RISK_REVIEW,
+    classify_command,
+    classify_file_write,
+    pattern_key_for,
+)
+from app.permissions.smart import GuardianAssessment, SmartGuardian, get_smart_guardian
 from app.tools.models import ToolCapability, ToolDefinition
 from app.tools.workspace import current_employee_key
-
 
 # Risk order for capabilities (lower = lower risk, processed first)
 CAPABILITY_RISK_ORDER = {
     ToolCapability.READ: 10,
-    ToolCapability.NETWORK: 20,
-    ToolCapability.WRITE: 30,
-    ToolCapability.NETWORK_ADMIN: 40,
-    ToolCapability.STORAGE: 40,
-    ToolCapability.EXECUTE: 50,
-    ToolCapability.PROCESS: 50,
-    ToolCapability.SYSTEM: 60,
+    ToolCapability.WRITE: 20,
+    ToolCapability.NETWORK: 30,
+    ToolCapability.EXECUTE: 40,
+    ToolCapability.PROCESS: 40,
+    ToolCapability.STORAGE: 45,
+    ToolCapability.NETWORK_ADMIN: 45,
+    ToolCapability.SYSTEM: 50,
     ToolCapability.DESTRUCTIVE: 100,
 }
 
+FILE_WRITE_TOOLS = {"write_file", "patch"}
+AGENT_TOOLS = {"run_opencode", "run_hermes"}
+
+
+def _normalize_capability(cap) -> ToolCapability:
+    if isinstance(cap, ToolCapability):
+        return cap
+    try:
+        return ToolCapability(cap)
+    except ValueError:
+        return cap
+
 
 class PermissionEngine:
-    """
-    Deterministic permission engine with layered defense.
-    
-    Layers:
-    1. Bypass (YOLO, off mode, context auto-approve)
-    2. Allowlist (session + permanent)
-    3. Static danger detection
-    4. Smart guardian (optional, async)
-    5. Human approval gate
-    """  # noqa: W293
+    """Deterministic permission engine with layered defense."""
 
     def __init__(
         self,
         allowlist: AllowlistManager | None = None,
         smart_guardian: SmartGuardian | None = None,
-        gateway_callback=None,  # For Web UI approval
+        gateway_callback=None,
     ) -> None:
         self.config = get_permission_config()
         self.allowlist = allowlist or AllowlistManager()
         self.smart_guardian = smart_guardian or get_smart_guardian()
         self.gateway_callback = gateway_callback
 
-        # Circuit breaker for smart guardian denials (delegated to smart guardian)
-
     def _get_capability_policy(self, cap: ToolCapability) -> str:
-        """Get approval policy for a capability."""
+        """Get the approval policy for a capability.
+
+        Deterministic defaults — never dependent on optional config fields.
+        """
         if cap == ToolCapability.READ:
-            return "auto_allow" if self.config.auto_allow_read else "session_allow"
-        elif cap == ToolCapability.WRITE:
-            return "session_allow" if self.config.session_allow_write else "explicit"
-        elif cap == ToolCapability.EXECUTE:
-            return "explicit" if self.config.explicit_destructive else "session_allow"
-        elif cap == ToolCapability.DESTRUCTIVE:
+            return "auto_allow"
+        if cap == ToolCapability.WRITE:
+            return "auto_allow"
+        if cap == ToolCapability.DESTRUCTIVE:
             return "explicit"
-        elif cap in (ToolCapability.NETWORK, ToolCapability.NETWORK_ADMIN):
-            return "explicit" if self.config.explicit_destructive else "session_allow"
-        elif cap in (ToolCapability.SYSTEM, ToolCapability.STORAGE, ToolCapability.PROCESS, ToolCapability.NETWORK_ADMIN):
-            return "explicit"
+        if cap in (
+            ToolCapability.EXECUTE,
+            ToolCapability.NETWORK,
+            ToolCapability.NETWORK_ADMIN,
+            ToolCapability.SYSTEM,
+            ToolCapability.STORAGE,
+            ToolCapability.PROCESS,
+        ):
+            return "session_allow"
         return "explicit"
 
     def check(self, tool: ToolDefinition, arguments: dict | None = None) -> PermissionDecision:
-        """Synchronous check - returns decision or APPROVAL_REQUIRED."""
-        result = self._check_internal(tool, arguments or {})
-        return result.decision
+        """Synchronous check - ambiguous commands stay at approval."""
+        return self._check_internal(tool, arguments or {}).decision
 
-    async def check_async(self, tool: ToolDefinition, arguments: dict | None = None) -> PermissionDecision:  # noqa: E501
-        """Async check - can run smart guardian."""
+    async def check_async(
+        self, tool: ToolDefinition, arguments: dict | None = None
+    ) -> PermissionDecision:
+        """Async check - may consult the smart guardian for ambiguous commands."""
         result = await self._check_async_internal(tool, arguments or {})
         return result.decision
 
     def _check_internal(self, tool: ToolDefinition, arguments: dict) -> PermissionResult:
-        """Internal synchronous check using capability-based policies."""
-        # 1. Build request
         request = PermissionRequest(
             tool_name=tool.name,
             classification=tool.classification,
@@ -97,160 +116,149 @@ class PermissionEngine:
             arguments=arguments,
         )
 
-        # 1.5. Resolve capabilities for this invocation
-        if tool.resolve_capabilities:
-            invocation_caps = tool.resolve_capabilities(arguments)
-        else:
-            invocation_caps = tool.capabilities
+        # Agent tools invoked by an employee run in an isolated, budgeted
+        # workspace — no approval required.
+        if tool.name in AGENT_TOOLS and current_employee_key() is not None:
+            return PermissionResult(decision=PermissionDecision.ALLOWED)
 
-        # 2. Bypass checks
+        # 1. Dangerous / catastrophic shell commands come first so no
+        #    bypass mode can ever auto-approve them.
+        if tool.name == "run_command":
+            return self._check_run_command(request, arguments)
+
+        # 2. File writes: ordinary files run silently, protected files
+        #    outside a trusted workspace require approval.
+        if tool.name in FILE_WRITE_TOOLS:
+            return self._check_file_write(request, arguments)
+
+        # 3. Bypass checks (YOLO, off mode, approving context, deny context)
         bypass_result = self._check_bypass(request)
-        if bypass_result.decision == PermissionDecision.ALLOWED:
+        if bypass_result.decision != PermissionDecision.APPROVAL_REQUIRED:
             return bypass_result
 
-        # 3. Allowlist check
-        pattern_key = self._get_pattern_key(request)
-        if self.allowlist.is_allowed(pattern_key):
-            return PermissionResult(decision=PermissionDecision.ALLOWED, pattern_key=pattern_key)
+        # 4. Allowlist
+        key = pattern_key_for(tool.name, arguments)
+        if self.allowlist.is_allowed(key):
+            return PermissionResult(decision=PermissionDecision.ALLOWED, pattern_key=key)
 
-        # 4. Capability-based approval policies
-        # Check capabilities in order of increasing risk
-        for cap in sorted(invocation_caps, key=lambda c: CAPABILITY_RISK_ORDER.get(c, 999)):
+        # 5. Capability policies, lowest risk first
+        invocation_caps = (
+            tool.resolve_capabilities(arguments)
+            if tool.resolve_capabilities
+            else tool.capabilities
+        )
+        capabilities = [_normalize_capability(cap) for cap in invocation_caps]
+        capabilities.sort(key=lambda c: CAPABILITY_RISK_ORDER.get(c, 999))
+
+        for cap in capabilities:
             policy = self._get_capability_policy(cap)
             if policy == "auto_allow":
-                return PermissionResult(decision=PermissionDecision.ALLOWED, pattern_key=None)
-            elif policy == "session_allow":
-                if self.allowlist.is_allowed(pattern_key):
-                    return PermissionResult(decision=PermissionDecision.ALLOWED, pattern_key=pattern_key)
-                return self._create_approval_required(
-                    (True, request.tool_name, f"{cap.value} requires session approval"),
-                    request
+                return PermissionResult(
+                    decision=PermissionDecision.ALLOWED, pattern_key=key
                 )
-            elif policy == "explicit":
+            if policy == "session_allow":
+                return self._ask_or_allow(key, request, f"{cap.value} requires approval")
+            if policy == "explicit":
                 return self._create_approval_required(
-                    (True, request.tool_name, f"{cap.value} requires explicit approval"),
-                    request
+                    f"{cap.value} requires explicit approval", request
                 )
-            elif policy == "deny":
+            if policy == "deny":
                 return PermissionResult(
                     decision=PermissionDecision.DENIED,
-                    pattern_key=pattern_key,
-                    message=f"{cap.value} is not permitted"
+                    pattern_key=key,
+                    message=f"{cap.value} is not permitted",
                 )
 
-        # 2. Bypass checks (legacy, kept for compatibility)
-        bypass_result = self._check_bypass(request)
-        if bypass_result.decision == PermissionDecision.ALLOWED:
-            return bypass_result
-
-        # 3. Allowlist check
-        pattern_key = self._get_pattern_key(request)
-        if self.allowlist.is_allowed(pattern_key):
-            return PermissionResult(decision=PermissionDecision.ALLOWED, pattern_key=pattern_key)
-
-        # 3. Read-only fast path (legacy)
-        if self._is_read_only(request):
-            return PermissionResult(decision=PermissionDecision.ALLOWED, pattern_key=pattern_key)
-
-        # 4. Danger detection
-        danger_result = self._check_danger(request)
-        if danger_result:
-            return self._create_approval_required(danger_result, request)
-
-        # 5. Destructive tool
+        # 6. Legacy classification fallback (tools without capabilities)
+        classification = self._get_classification_value(request.classification)
+        if classification == "read_only":
+            return PermissionResult(decision=PermissionDecision.ALLOWED, pattern_key=key)
         if request.destructive:
-            return self._create_approval_required(
-                (True, request.tool_name, f"destructive tool: {request.tool_name}"),
-                request
+            return self._ask_or_allow(key, request, f"destructive tool: {request.tool_name}")
+        if classification == "external_side_effect":
+            return self._ask_or_allow(
+                key, request, f"external side effect: {request.tool_name}"
             )
+        if classification in {"read_only", "local_mutation", "external_side_effect"}:
+            return PermissionResult(decision=PermissionDecision.ALLOWED, pattern_key=key)
 
-        # 6. External side effect
-        if self._get_classification_value(request.classification) == "external_side_effect":
-            return self._create_approval_required(
-                (True, request.tool_name, f"external side effect: {request.tool_name}"),
-                request
-            )
+        return PermissionResult(
+            decision=PermissionDecision.DENIED,
+            pattern_key=key,
+            message=f"Unknown tool classification: {request.classification}",
+        )
 
-        # Unknown classification - fail closed
-        known_classifications = {"read_only", "local_mutation", "external_side_effect"}
-        if self._get_classification_value(request.classification) not in known_classifications:
+    def _check_run_command(
+        self, request: PermissionRequest, arguments: dict
+    ) -> PermissionResult:
+        command = str(arguments.get("command", ""))
+        risk, reason = classify_command(command)
+        key = pattern_key_for("run_command", arguments)
+
+        if risk == RISK_DENY:
             return PermissionResult(
                 decision=PermissionDecision.DENIED,
-                pattern_key=pattern_key,
-                message=f"Unknown tool classification: {request.classification}"
+                pattern_key=key,
+                message=f"Hard-blocked command: {reason}",
             )
 
-        # Default allow
-        return PermissionResult(decision=PermissionDecision.ALLOWED, pattern_key=pattern_key)
+        if risk == RISK_ALLOW:
+            return PermissionResult(
+                decision=PermissionDecision.ALLOWED, pattern_key=key
+            )
 
-    async def _check_async_internal(self, tool: ToolDefinition, arguments: dict) -> PermissionResult:  # noqa: E501
-        """Internal async check with smart guardian PRE-approval."""
-        # 1. First run deterministic checks
+        if self.allowlist.is_allowed(key):
+            return PermissionResult(decision=PermissionDecision.ALLOWED, pattern_key=key)
+
+        result = self._create_approval_required(reason, request)
+        result.pattern_key = key
+        # Only ambiguous commands may be auto-resolved by the smart guardian.
+        result.requires_smart_check = risk == RISK_REVIEW
+        return result
+
+    def _check_file_write(
+        self, request: PermissionRequest, arguments: dict
+    ) -> PermissionResult:
+        path = str(arguments.get("path") or arguments.get("file") or "")
+        risk, reason = classify_file_write(path)
+
+        if risk == RISK_ALLOW:
+            return PermissionResult(decision=PermissionDecision.ALLOWED)
+
+        key = pattern_key_for(request.tool_name, arguments)
+        if self.allowlist.is_allowed(key):
+            return PermissionResult(decision=PermissionDecision.ALLOWED, pattern_key=key)
+
+        result = self._create_approval_required(reason, request)
+        result.pattern_key = key
+        return result
+
+    async def _check_async_internal(
+        self, tool: ToolDefinition, arguments: dict
+    ) -> PermissionResult:
+        """Deterministic check, then smart guardian for ambiguous commands."""
         result = self._check_internal(tool, arguments)
 
-        # 2. If deterministic checks pass (ALLOWED), check if smart guardian should run pre-approval
-        if result.decision == PermissionDecision.ALLOWED:
-            # Check if smart guardian should run pre-approval for this capability level
-            if (self.config.smart_guardian_pre_approval 
-                and self.smart_guardian 
-                and tool.capabilities):
-                
-                # Check if any capability warrants smart guardian review
-                high_risk_caps = {
-                    ToolCapability.EXECUTE, ToolCapability.NETWORK, 
-                    ToolCapability.SYSTEM, ToolCapability.DESTRUCTIVE,
-                    ToolCapability.NETWORK_ADMIN, ToolCapability.STORAGE,
-                    ToolCapability.PROCESS
-                }
-                needs_smart_review = any(c in tool.capabilities for c in high_risk_caps)
-                
-                if needs_smart_review:
-                    smart_result = await self._run_smart_guardian_pre_approval(
-                        tool, arguments, tool.capabilities
-                    )
-                    if smart_result.verdict == SmartVerdict.APPROVE:
-                        return PermissionResult(
-                            decision=PermissionDecision.ALLOWED,
-                            pattern_key=None,
-                            smart_verdict=SmartVerdict.APPROVE.value
-                        )
-                    elif smart_result.verdict == SmartVerdict.DENY:
-                        return PermissionResult(
-                            decision=PermissionDecision.DENIED,
-                            pattern_key=None,
-                            description="Smart guardian denied",
-                            message=f"Smart guardian denied: {smart_result.reasoning}",
-                            smart_verdict=SmartVerdict.DENY.value
-                        )
-                    # ESCALATE falls through to normal flow
-
-        # 3. If we reach here, check if approval is required
-        if result.decision == PermissionDecision.APPROVAL_REQUIRED:
-            # Run smart guardian as fallback for approval-required cases
-            if self.smart_guardian:
-                smart_result = await self._run_smart_guardian_fallback(arguments)
-                if smart_result.verdict == SmartVerdict.APPROVE:
-                    return PermissionResult(
-                        decision=PermissionDecision.ALLOWED,
-                        pattern_key=result.pattern_key,
-                        smart_verdict=SmartVerdict.APPROVE.value
-                    )
-                elif smart_result.verdict == SmartVerdict.DENY:
-                    return PermissionResult(
-                        decision=PermissionDecision.DENIED,
-                        pattern_key=result.pattern_key,
-                        description=result.description,
-                        message=f"Smart guardian denied: {smart_result.reasoning}",
-                        smart_verdict=SmartVerdict.DENY.value
-                    )
-                elif smart_result.verdict == SmartVerdict.DENY and self._check_circuit_breaker():
-                    return PermissionResult(
-                        decision=PermissionDecision.DENIED,
-                        pattern_key=result.pattern_key,
-                        description=result.description,
-                        message=f"Circuit breaker: {self.config.denial_breaker_threshold} consecutive smart denials",  # noqa: E501
-                        smart_verdict=SmartVerdict.DENY.value
-                    )
+        if (
+            result.decision == PermissionDecision.APPROVAL_REQUIRED
+            and result.requires_smart_check
+            and self.smart_guardian
+        ):
+            verdict = await self._run_smart_guardian(arguments, result)
+            if verdict.verdict == SmartVerdict.APPROVE.value:
+                return PermissionResult(
+                    decision=PermissionDecision.ALLOWED,
+                    pattern_key=result.pattern_key,
+                    smart_verdict=SmartVerdict.APPROVE.value,
+                )
+            if verdict.verdict == SmartVerdict.DENY.value:
+                return PermissionResult(
+                    decision=PermissionDecision.DENIED,
+                    pattern_key=result.pattern_key,
+                    description=result.description,
+                    message=f"Smart guardian denied: {verdict.reasoning}",
+                    smart_verdict=SmartVerdict.DENY.value,
+                )
 
         return result
 
@@ -259,7 +267,7 @@ class PermissionEngine:
         config = get_permission_config()
 
         # Global YOLO: allow everything EXCEPT genuinely destructive tools,
-        # which still require explicit approval (danger detection below).
+        # which still require explicit approval.
         if config.yolo_active:
             if not request.destructive:
                 return PermissionResult(decision=PermissionDecision.ALLOWED)
@@ -278,121 +286,57 @@ class PermissionEngine:
         if context.mode == "deny":
             return PermissionResult(
                 decision=PermissionDecision.DENIED,
-                message=f"Blocked by {context.name} context (mode: deny)"
+                message=f"Blocked by {context.name} context (mode: deny)",
             )
 
         return PermissionResult(decision=PermissionDecision.APPROVAL_REQUIRED)
 
-    def _get_pattern_key(self, request: PermissionRequest) -> str:
-        """Generate pattern key for allowlist matching."""
-        if request.tool_name == "run_command" and request.arguments:
-            cmd = request.arguments.get("command", "")
-            # Use first word of command as base pattern
-            first_word = cmd.strip().split()[0] if cmd.strip() else request.tool_name
-            return f"{request.tool_name}:{first_word}"
-        return request.tool_name
+    def _ask_or_allow(
+        self,
+        key: str,
+        request: PermissionRequest,
+        description: str,
+    ) -> PermissionResult:
+        if self.allowlist.is_allowed(key):
+            return PermissionResult(decision=PermissionDecision.ALLOWED, pattern_key=key)
+        result = self._create_approval_required(description, request)
+        result.pattern_key = key
+        return result
 
     def _get_classification_value(self, classification) -> str:
         """Get classification value handling both enum and string."""
-        if hasattr(classification, 'value'):
+        if hasattr(classification, "value"):
             return classification.value
         return str(classification)
 
-    def _is_read_only(self, request: PermissionRequest) -> bool:
-        """Check if tool/args are read-only."""
-        if self._get_classification_value(request.classification) == "read_only":
-            return True
-
-        # run_command with read-only command
-        if request.tool_name == "run_command" and request.arguments:
-            cmd = request.arguments.get("command", "")
-            if is_read_only_command(cmd):
-                return True
-
-        # Agent tools (run_opencode, run_hermes) when invoked by an employee
-        # are budgeted, verified, and run in isolated workspace — no approval needed
-        is_agent_tool = request.tool_name in ("run_opencode", "run_hermes")
-        return bool(is_agent_tool and current_employee_key() is not None)
-
-    def _check_danger(self, request: PermissionRequest) -> tuple[bool, str, str] | None:
-        """Check for dangerous patterns."""
-        if request.tool_name == "run_command" and request.arguments:
-            cmd = request.arguments.get("command", "")
-            if cmd:
-                return detect_dangerous(cmd)
-        return None
-
-    def _create_approval_required(self, danger_result: tuple, request: PermissionRequest) -> PermissionResult:  # noqa: E501
-        _dangerous, pattern_key, description = danger_result
+    def _create_approval_required(
+        self, description: str, request: PermissionRequest
+    ) -> PermissionResult:
         return PermissionResult(
             decision=PermissionDecision.APPROVAL_REQUIRED,
-            pattern_key=pattern_key,
             description=description,
-            requires_smart_check=True,
+            requires_smart_check=False,
         )
 
-    async def _run_smart_guardian(self, result: PermissionResult, arguments: dict) -> SmartVerdict:
-        """Run smart guardian LLM check."""
+    async def _run_smart_guardian(
+        self, arguments: dict, result: PermissionResult
+    ) -> GuardianAssessment:
+        """Run the smart guardian LLM check for an ambiguous command."""
         if not self.smart_guardian:
-            return SmartVerdict(verdict=SmartVerdict.ESCALATE)
+            return GuardianAssessment(verdict=SmartVerdict.ESCALATE.value)
 
         try:
-            verdict = await self.smart_guardian.assess(
+            return await self.smart_guardian.assess(
                 command=arguments.get("command", "") if arguments else "",
                 description=result.description or "",
                 pattern_keys=[result.pattern_key] if result.pattern_key else [],
             )
-
-            # Track denials for circuit breaker
-            if verdict.verdict == SmartVerdict.DENY:
-                self.smart_guardian._record_denial()
-
-            return verdict
         except Exception:
-            # Smart guardian failure = escalate to human
-            return SmartVerdict(verdict=SmartVerdict.ESCALATE, reasoning="Smart guardian error")
-
-    async def _run_smart_guardian_pre_approval(
-        self, 
-        tool: ToolDefinition, 
-        arguments: dict, 
-        capabilities: list[ToolCapability]
-    ) -> SmartVerdict:
-        """Run smart guardian for PRE-approval (before approval decision)."""
-        if not self.smart_guardian:
-            return SmartVerdict(verdict=SmartVerdict.ESCALATE)
-
-        # Build context for pre-approval
-        objective = arguments.get("objective", f"Execute {tool.name}")
-        
-        prompt = f"""Analyze this tool invocation for safety BEFORE approval decision:
-
-Tool: {tool.name}
-Capabilities: {[c.value for c in capabilities]}
-Arguments: {arguments}
-Objective: {objective}
-
-Determine if this action is safe to AUTO-APPROVE.
-Consider: destructiveness, reversibility, scope of impact, user intent.
-
-Respond with JSON:
-{{
-  "verdict": "approve" | "deny" | "escalate",
-  "reasoning": "brief explanation",
-  "confidence": 0.0-1.0
-}}
-
-Be strict but fair. If uncertain, escalate."""
-
-        try:
-            verdict = await self.smart_guardian.assess(
-                command=arguments.get("command", "") if arguments else "",
-                description=f"Pre-approval check for {tool.name}: {objective}",
-                pattern_keys=[tool.name],
+            # Guardian failure = escalate to human
+            return GuardianAssessment(
+                verdict=SmartVerdict.ESCALATE.value,
+                reasoning="Smart guardian error",
             )
-            return verdict
-        except Exception:
-            return SmartVerdict(verdict=SmartVerdict.ESCALATE, reasoning="Smart guardian pre-approval error")
 
     def _check_circuit_breaker(self) -> bool:
         """Check if circuit breaker is triggered (delegates to smart guardian)."""

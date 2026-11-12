@@ -34,7 +34,7 @@ Do NOT explain. One word only."""  # noqa: E501
 
 @dataclass
 class GuardianAssessment:
-    verdict: str  # "APPROVE" | "DENY" | "ESCALATE"
+    verdict: str  # "approve" | "deny" | "escalate"
     reasoning: str = ""
     confidence: float = 1.0
 
@@ -69,23 +69,25 @@ class SmartGuardian:
         description: str,
         pattern_keys: list[str],
         intent: str = "",
-    ) -> tuple[str, str, float]:  # (verdict, reasoning, confidence)
+    ) -> GuardianAssessment:
         """Assess a command using the guardian LLM.
-        
-        Returns: (verdict, reasoning, confidence)
-        verdict: "APPROVE" | "DENY" | "ESCALATE"
-        """  # noqa: W293
+
+        Returns a ``GuardianAssessment`` whose verdict is one of
+        ``"approve" | "deny" | "escalate"`` (matching ``SmartVerdict``).
+        """
         if not self.enabled:
-            return "ESCALATE", "Smart guardian disabled", 0.0
+            return GuardianAssessment(verdict="escalate", reasoning="Smart guardian disabled")
 
         if not self.inference_manager:
             logger.warning("Smart guardian enabled but no inference manager available")
-            return "ESCALATE", "No inference manager", 0.0
+            return GuardianAssessment(verdict="escalate", reasoning="No inference manager")
 
         # Check circuit breaker
         if self._is_circuit_breaker_tripped():
             logger.warning("Circuit breaker tripped - denying")
-            return "DENY", "Circuit breaker tripped", 1.0
+            return GuardianAssessment(
+                verdict="deny", reasoning="Circuit breaker tripped", confidence=1.0
+            )
 
         # Build prompt
         patterns_str = ", ".join(pattern_keys) if pattern_keys else "none"
@@ -112,34 +114,35 @@ class SmartGuardian:
             )
 
             verdict = self._parse_verdict(response.content)
-            confidence = 0.9 if verdict in ("APPROVE", "DENY") else 0.5
+            confidence = 0.9 if verdict in ("approve", "deny") else 0.5
 
-            if verdict == "DENY":
+            if verdict == "deny":
                 self._record_denial()
 
-            return verdict, response.content.strip(), confidence
+            return GuardianAssessment(
+                verdict=verdict,
+                reasoning=response.content.strip(),
+                confidence=confidence,
+            )
 
         except TimeoutError:
             logger.warning("Smart guardian timed out")
-            return "ESCALATE", "Timeout", 0.0
+            return GuardianAssessment(verdict="escalate", reasoning="Timeout")
         except Exception as e:
             logger.warning(f"Smart guardian error: {e}")
-            return "ESCALATE", f"Error: {e}", 0.0
+            return GuardianAssessment(verdict="escalate", reasoning=f"Error: {e}")
 
     def _parse_verdict(self, response: str) -> str:
-        """Parse guardian response to extract verdict."""
+        """Parse guardian response to extract a lowercase verdict."""
         if not response:
-            return "ESCALATE"
+            return "escalate"
 
-        # Clean response
         cleaned = response.strip().upper()
-
-        # Extract just the verdict word
         for verdict in ["APPROVE", "DENY", "ESCALATE"]:
             if verdict in cleaned:
-                return verdict
+                return verdict.lower()
 
-        return "ESCALATE"
+        return "escalate"
 
     def _record_denial(self) -> None:
         """Record a denial for circuit breaker."""

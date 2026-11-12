@@ -4,10 +4,9 @@ import asyncio
 import json
 import time
 
-from app.permissions.command_policy import is_read_only_command
 from app.tools.models import ToolCapability, ToolClassification, ToolDefinition
-from app.tools.shell_parser import _resolve_run_command_capabilities
 from app.tools.schemas import ToolInput
+from app.tools.shell_parser import _resolve_run_command_capabilities
 
 MAX_OUTPUT_CHARS = 20_000
 DEFAULT_TIMEOUT_SECONDS = 30
@@ -71,13 +70,6 @@ async def run_command(command: str, timeout_seconds: int = 30) -> str:
     )
 
 
-def _needs_approval(arguments: dict) -> bool:
-    try:
-        return not is_read_only_command(arguments["command"])
-    except (KeyError, TypeError):
-        return True
-
-
 def register_shell_tools(registry) -> None:
     def _resolve_capabilities(arguments: dict) -> list:
         from app.tools.shell_parser import _resolve_run_command_capabilities
@@ -89,9 +81,9 @@ def register_shell_tools(registry) -> None:
             name="run_command",
             description=(
                 "Run a shell command in the SAGE workspace directory. "
-                "Read-only commands (ls, cat, grep, git status, ...) run "
-                "immediately; anything that can change state requires user "
-                "approval. Results include exit_code, stdout, stderr. "
+                "Ordinary commands run immediately; dangerous commands "
+                "(sudo, recursive deletes, pipes to a shell, ...) require "
+                "approval and catastrophic commands are hard-blocked. "
                 "NOT FOR CODING TASKS — do not use for npm, git, build, or scaffolding. "
                 "Use run_opencode for all coding-related commands."
             ),
@@ -101,7 +93,6 @@ def register_shell_tools(registry) -> None:
             employee_eligible=True,
             capabilities=[ToolCapability.EXECUTE],
             resolve_capabilities=lambda args: _resolve_run_command_capabilities(args),
-            requires_approval=_needs_approval,
             handler=run_command,
         )
     )

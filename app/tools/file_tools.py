@@ -5,22 +5,8 @@ from pathlib import Path
 
 from app.tools.models import ToolCapability, ToolClassification, ToolDefinition
 from app.tools.schemas import ToolInput
-
-MAX_READ_CHARS = 100_000
-MAX_LIST_ENTRIES = 200
-MAX_WRITE_CHARS = 1_000_000
-
-
-"""File tools: read_file, list_files, write_file, patch."""
-
-import json
-from pathlib import Path
-
-from app.tools.models import ToolCapability, ToolClassification, ToolDefinition
-from app.tools.schemas import ToolInput
 from app.tools.workspace import (
     current_workspace,
-    authorized_workspace,
     is_path_authorized,
 )
 
@@ -45,19 +31,15 @@ def resolve_path(path: str) -> Path:
     they are project/system paths that SAGE needs to access internally.
     """
 
-    from app.tools.workspace import current_workspace, authorized_workspace, is_path_authorized
-
     expanded = Path(path).expanduser()
     if expanded.is_absolute():
         resolved = expanded.resolve()
         # Check authorization for absolute paths
-        if not is_path_authorized(resolved):
-            # Allow access to project root and employee data directories
-            if not _is_system_path(resolved):
-                raise PermissionError(
-                    f"Access denied: '{resolved}' is outside the authorized workspace. "
-                    f"Use the 'authorize_workspace' tool to grant access to this directory."
-                )
+        if not is_path_authorized(resolved) and not _is_system_path(resolved):
+            raise PermissionError(
+                f"Access denied: '{resolved}' is outside the authorized workspace. "
+                f"Use the 'authorize_workspace' tool to grant access to this directory."
+            )
         return resolved
 
     workspace_candidate = (current_workspace() / expanded).resolve()
@@ -69,8 +51,7 @@ def resolve_path(path: str) -> Path:
             )
         return workspace_candidate
 
-    from pathlib import Path as _Path
-    project_root = _Path(__file__).resolve().parents[2]
+    project_root = Path(__file__).resolve().parents[2]
     project_candidate = (project_root / expanded).resolve()
     if project_candidate.exists():
         return project_candidate
@@ -79,7 +60,7 @@ def resolve_path(path: str) -> Path:
 
 
 def _is_system_path(path: Path) -> bool:
-    """Check if path is a system/project path that should be accessible without explicit authorization."""
+    """True for project-root paths SAGE may access internally."""
     try:
         project_root = Path(__file__).resolve().parents[2]
         # Allow access to project root and employee data directories
@@ -111,6 +92,23 @@ class PatchFileInput(ToolInput):
     old_text: str
     new_text: str
     replace_all: bool = False
+
+
+class AuthorizeWorkspaceInput(ToolInput):
+    path: str
+
+
+def authorize_workspace_tool(path: str) -> str:
+    """Grant SAGE full access to a directory the user explicitly named."""
+    from app.tools.workspace import authorize_workspace
+
+    root = authorize_workspace(path, persistent=True)
+    return json.dumps(
+        {
+            "authorized": str(root),
+            "message": f"Full read/write access granted to {root} for this session.",
+        }
+    )
 
 
 def read_file(path: str, offset: int = 0, limit: int = 200) -> str:
@@ -202,22 +200,6 @@ def write_file(path: str, content: str) -> str:
     )
 
 
-def _outside_workspace(file_path: Path) -> bool:
-    from app.tools.workspace import current_workspace
-
-    workspace = current_workspace()
-    try:
-        return not file_path.resolve().is_relative_to(workspace)
-    except OSError:
-        return True
-
-
-def _write_needs_approval(arguments: dict) -> bool:
-    """File edits run without approval (trusted: SAGE manages its own files)."""
-
-    return False
-
-
 def patch(path: str, old_text: str, new_text: str, replace_all: bool = False) -> str:
     file_path = resolve_path(path)
 
@@ -307,15 +289,15 @@ def register_file_tools(registry) -> None:
             description=(
                 "Create or overwrite a text file. Relative paths resolve "
                 "under the workspace directory and missing parent "
-                "directories are created. Edits run immediately — no "
-                "approval is required."
+                "directories are created. Ordinary files are edited "
+                "immediately; secrets, system files, and data stores outside "
+                "an authorized directory require approval."
             ),
             classification=ToolClassification.LOCAL_MUTATION,
             input_schema=WriteFileInput,
             destructive=False,
             employee_eligible=True,
             capabilities=[ToolCapability.WRITE],
-            requires_approval=_write_needs_approval,
             handler=write_file,
         )
     )
@@ -326,14 +308,34 @@ def register_file_tools(registry) -> None:
             description=(
                 "Replace exact text in an existing file (surgical edit). "
                 "old_text must match exactly once unless replace_all is "
-                "true. Edits run immediately — no approval is required."
+                "true. Ordinary files are edited immediately; protected "
+                "files outside an authorized directory require approval."
             ),
             classification=ToolClassification.LOCAL_MUTATION,
             input_schema=PatchFileInput,
             destructive=False,
             employee_eligible=True,
             capabilities=[ToolCapability.WRITE],
-            requires_approval=_write_needs_approval,
             handler=patch,
+        )
+    )
+
+    registry.register(
+        ToolDefinition(
+            name="authorize_workspace",
+            description=(
+                "Grant SAGE full read/write access to a directory the user "
+                "explicitly pointed at (e.g. 'work in ~/projects/xyz' or "
+                "'fix the bugs in /Users/me/app'). Call this before editing "
+                "files in that directory so edits there run without prompts, "
+                "including sensitive-looking files; sensitive paths outside "
+                "the directory still require approval."
+            ),
+            classification=ToolClassification.LOCAL_MUTATION,
+            input_schema=AuthorizeWorkspaceInput,
+            destructive=False,
+            employee_eligible=True,
+            capabilities=[ToolCapability.WRITE],
+            handler=authorize_workspace_tool,
         )
     )
