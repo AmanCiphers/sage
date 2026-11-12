@@ -11,10 +11,21 @@ data/
 *.db-shm
 *.db-wal
 
-.pytest_cache/
-.ruff_cache/
+# generated build output
+*.egg-info/
+build/
+dist/
 
-.DS_Store
 # generated snapshots and scratch audio
 backups/
+*.wav
 test_api.wav
+
+# local audit artifacts
+.audit_snapshot/
+
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+.DS_Store
