@@ -36,6 +36,51 @@ section so they are never confused with shipped behavior.
 Changes from the web-UI integration work that were **not** recorded in
 `DECISIONS.md`.
 
+## A52 — Web UI bug sweep: WebSocket addressing, TDZ crashes, missing task routes  *(2026-11-12)*
+
+- **Area:** Web UI / Backend
+- **Change:**
+  - **WebSocket addressing.** `Console` hardcoded `ws://localhost:8000/ws/sage`,
+    so the UI could not connect from any host other than `localhost` and would
+    be blocked as mixed content over HTTPS. Both `Console` and `VoiceBar` now
+    use `wsBase()` (`web/src/lib/backend.ts`), which follows the page protocol
+    (`wss` under HTTPS) and honours `NEXT_PUBLIC_SAGE_WS`.
+  - **VoiceBar temporal-dead-zone crash.** `connectAudio`'s `onmessage` called
+    `enqueueWav` and the unmount cleanup called `stopMic` — both `const`s
+    declared ~100 lines below. Reaching either before initialisation threw
+    `ReferenceError`, which eslint flagged as "Cannot access variable before
+    it is declared". Reached through refs assigned in an effect (the pattern
+    the file already used for `connectVoice`/`connectAudio`).
+  - **WebSocket reconnect after unmount.** `Console`'s `onclose` scheduled a
+    reconnect unconditionally, so React StrictMode's double-invoke left an
+    orphaned socket retrying forever. Now guarded by a `closed` flag with the
+    timer cleared on unmount, and the handler reached via a ref rather than a
+    stale first-render closure.
+  - **Missing task routes.** `Worker.tsx` called `POST /api/tasks/{id}/cancel`
+    and `GET /api/tasks/{id}/stream`; neither existed. Both added. `cancel`
+    returns `not_found` for an unknown id rather than letting
+    `supervisor.cancel_task` mark a nonexistent task `cancelled`. `stream` is a
+    polled SSE of task state with a monotonic `seq` for reconnect-dedup.
+- **Files:** `web/src/lib/backend.ts` (new), `web/src/components/Console.tsx`,
+  `web/src/components/VoiceBar.tsx`, `web/backend.py`
+- **Why:** The TDZ errors were genuine runtime crashes on the audio path. The
+  hardcoded host made the UI single-machine-only. The missing routes meant the
+  task-detail view could never load (see A53 for its status).
+
+## A51 — Fallback model is unreachable and costs a full timeout  *(2026-11-12)*
+
+- **Area:** Inference / Config
+- **Change:** None yet — **diagnosis only**. `config/models.py` marks
+  `openai/gpt-oss-20b` (NVIDIA) `available=True`. A direct probe of
+  `POST /v1/chat/completions` hangs for the full 180 s `ReadTimeout` and then
+  fails; `/v1/models` does list the id, so it is not a naming error.
+- **Files:** `config/models.py`
+- **Why:** `InferenceManager` builds its fallback chain from `available`, so
+  every primary failure waits three minutes before surfacing an error. This is
+  the cause of the `failed` Otto tasks on 2026-11-11 ("Provider request timed
+  out"). Fixing it means either setting `available=False` or replacing the
+  model — a configuration decision, so it is recorded, not changed.
+
 ## A50 — Process-level crash recovery is now tested  *(2026-11-12)*
 
 - **Area:** Tests / Persistence / Operations

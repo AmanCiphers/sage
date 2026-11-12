@@ -546,6 +546,72 @@ async def list_tasks(limit: int = 50):
         return {"tasks": []}
 
 
+@app.post("/api/tasks/{task_id}/cancel")
+async def cancel_task(task_id: str):
+    """Cancel a background assignment."""
+    if not sage_app:
+        return {"error": "SAGE not initialized", "status": "failed"}
+    task = await sage_app.supervisor.get_status(task_id)
+    if task is None:
+        return {"error": f"Unknown task: {task_id}", "status": "not_found"}
+    await sage_app.supervisor.cancel_task(task_id)
+    return {"task_id": task_id, "status": "cancelled"}
+
+
+@app.get("/api/tasks/{task_id}/stream")
+async def stream_task(task_id: str, after: int = 0, seconds: int = 60):
+    """Versioned task-state stream (SSE, polled).
+
+    Each frame carries a monotonically increasing ``seq``; a client that
+    reconnects with ``?after=<seq>`` skips what it already has. The stream
+    ends after ``seconds`` so a browser reconnect re-establishes it rather
+    than holding a socket open indefinitely.
+    """
+    if not sage_app:
+        return StreamingResponse(
+            iter(['data: {"error": "SAGE not initialized"}\n\n']),
+            media_type="text/event-stream",
+        )
+
+    seconds = max(1, min(seconds, 3600))
+
+    async def event_generator():
+        seq = after
+        last_state: str | None = None
+        deadline = asyncio.get_running_loop().time() + seconds
+
+        while asyncio.get_running_loop().time() < deadline:
+            task = await sage_app.supervisor.get_status(task_id)
+            if task is None:
+                seq += 1
+                yield f"data: {json.dumps({'seq': seq, 'gone': True})}\n\n"
+                return
+
+            state = task.get("status")
+            if state != last_state:
+                last_state = state
+                seq += 1
+                frame = {
+                    "seq": seq,
+                    "kind": "state",
+                    "status": state,
+                    "stage": task.get("stage"),
+                    "progress": task.get("stage"),
+                    "elapsed": task.get("seconds_since_activity"),
+                    "result_preview": (task.get("result") or "")[:500],
+                    "error": task.get("error"),
+                }
+                yield f"data: {json.dumps(frame)}\n\n"
+                if state in ("done", "failed", "cancelled", "unknown"):
+                    return
+
+            await asyncio.sleep(1)
+
+        yield f"data: {json.dumps({'seq': seq, 'timeout': True})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
 @app.get("/api/workers")
 async def list_workers():
     """Roster snapshot: the five employees with standby/active status."""

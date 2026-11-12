@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import EmployeePanel, { EmployeeRow, EmployeeLogLine } from "./EmployeePanel";
 import VoiceBar from "./VoiceBar";
+import { wsBase } from "@/lib/backend";
 import { fmtClock, fmtElapsed, fmtMs, fmtChars, shortModel } from "@/lib/format";
 
 interface Line {
@@ -46,6 +47,24 @@ interface SysEvent {
   taskId?: string;
   stage?: string;
   tool?: string;
+}
+
+/** Frame shape emitted by /ws/sage (see backend._forward_system_event). */
+interface WsMessage {
+  type?: string;
+  source?: string;
+  event_type?: string;
+  summary?: string;
+  worker?: string | null;
+  name?: string | null;
+  task_id?: string | null;
+  stage?: string | null;
+  tool?: string | null;
+  data?: { payload?: Record<string, any>; [k: string]: any };
+  delta?: string;
+  approval?: { id?: string; description?: string; target?: string };
+  done?: boolean;
+  [k: string]: unknown;
 }
 
 const TONE = {
@@ -169,6 +188,7 @@ const createBootLines = () => [
 // backend needs no CORS. This also works when the dev server picks another port.
 const SSE_BASE = "";
 
+
 function Chip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
     <button
@@ -223,13 +243,13 @@ export default function Console() {
   const [employees, setEmployees] = useState<EmployeeRow[]>([]);
   const [activityByWorker, setActivityByWorker] = useState<Record<string, EmployeeLogLine[]>>({});
   const [now, setNow] = useState(0);
-  const noticesPolledRef = useRef(false);
 
   const seq = useRef(0);
   const startedAt = useRef(0);
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const wsHandlerRef = useRef<(msg: WsMessage) => void>(() => {});
   const lastApprovalId = useRef<string | undefined>(undefined);
   const voiceTurnRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -278,10 +298,18 @@ export default function Console() {
     el.scrollTop = el.scrollHeight;
   }, [lines, autoScroll, thinking]);
 
-  // WebSocket connection for live events
+  // WebSocket connection for live events.
+  //
+  // The handler is defined below this effect, so it is reached through a ref:
+  // an effect with `[]` deps would otherwise pin the first render's closure,
+  // which silently stops picking up handler changes.
   useEffect(() => {
+    let closed = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
     const connect = () => {
-      const ws = new WebSocket("ws://localhost:8000/ws/sage");
+      if (closed) return;
+      const ws = new WebSocket(wsBase() + "/ws/sage");
       wsRef.current = ws;
 
       ws.onopen = () => {
@@ -295,16 +323,19 @@ export default function Console() {
           if (msg.type === "event") {
             console.log("[ws] event:", msg.event_type, msg.worker, msg.summary);
           }
-          handleWsMessage(msg);
+          wsHandlerRef.current(msg);
         } catch (e) {
           console.error("[ws] parse error:", e);
         }
       };
 
       ws.onclose = () => {
-        console.log("[ws] disconnected, reconnecting...");
         setApiUp(false);
-        setTimeout(connect, 2000);
+        if (closed) return;
+        // Reconnect, but not after unmount — otherwise StrictMode's
+        // double-invoke leaves an orphaned socket reconnecting forever.
+        console.log("[ws] disconnected, reconnecting...");
+        retryTimer = setTimeout(connect, 2000);
       };
 
       ws.onerror = (err) => {
@@ -314,6 +345,8 @@ export default function Console() {
 
     connect();
     return () => {
+      closed = true;
+      if (retryTimer) clearTimeout(retryTimer);
       if (wsRef.current) {
         wsRef.current.close();
       }
@@ -354,7 +387,7 @@ export default function Console() {
     });
   }, []);
 
-  const handleWsMessage = useCallback((msg: any) => {
+  const handleWsMessage = useCallback((msg: WsMessage) => {
     if (msg.type === "event") {
       // Raw system event: keep it out of chat, route to panels by source.
       const data = msg.data || {};
@@ -399,6 +432,10 @@ export default function Console() {
       seal("sage");
     }
   }, [push, append, seal, appendEmployeeActivity]);
+
+  useEffect(() => {
+    wsHandlerRef.current = handleWsMessage;
+  }, [handleWsMessage]);
 
   // Fetch initial info
   useEffect(() => {
@@ -642,7 +679,7 @@ export default function Console() {
       setThinking(false);
       focusComposer();
     }
-  }, [input, busy, push, append, seal, focusComposer]);
+  }, [busy, push, append, seal, focusComposer]);
 
   const handleSendMessage = useCallback(async () => {
     const msg = input.trim();

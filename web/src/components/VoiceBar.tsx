@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { wsBase } from "@/lib/backend";
+
 /**
  * VoiceBar: wake-word / push-to-talk mic -> /ws/voice -> SAGE -> spoken line -> TTS.
  *
@@ -51,6 +53,13 @@ export default function VoiceBar({
 
   const connectVoiceRef = useRef<() => void>(() => {});
   const connectAudioRef = useRef<() => void>(() => {});
+  // Declared below their first use; the ref indirection keeps the WebSocket
+  // handlers and the unmount cleanup from referencing a binding that is still
+  // in its temporal dead zone.
+  const enqueueWavRef = useRef<(buf: ArrayBuffer, id: string | null) => void>(
+    () => {}
+  );
+  const stopMicRef = useRef<() => void>(() => {});
 
   const scheduleVoiceReconnect = useCallback(() => {
     if (!aliveRef.current) return;
@@ -76,7 +85,7 @@ export default function VoiceBar({
     if (!aliveRef.current) return;
     try {
       const ws = new WebSocket(
-        `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.hostname}:8000/ws/voice`
+        `${wsBase()}/ws/voice`
       );
       ws.binaryType = "arraybuffer";
       ws.onopen = () => {
@@ -128,7 +137,7 @@ export default function VoiceBar({
     if (!aliveRef.current) return;
     try {
       const ws = new WebSocket(
-        `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.hostname}:8000/ws/audio`
+        `${wsBase()}/ws/audio`
       );
       ws.binaryType = "arraybuffer";
       ws.onopen = () => {
@@ -149,7 +158,7 @@ export default function VoiceBar({
         if (e.data instanceof ArrayBuffer) {
           const id = pendingAudioIdRef.current;
           pendingAudioIdRef.current = null;
-          enqueueWav(e.data, id);
+          enqueueWavRef.current(e.data, id);
         }
       };
       ws.onclose = () => {
@@ -195,7 +204,7 @@ export default function VoiceBar({
       audioQueueRef.current = [];
       setVoiceConnected(false);
       setAudioConnected(false);
-      stopMic();
+      stopMicRef.current();
     };
   }, [enabled, connectVoice, connectAudio]);
 
@@ -363,6 +372,14 @@ export default function VoiceBar({
     },
     [drainAudioQueue]
   );
+
+  // Assigned in an effect after both calls above are initialised, so neither
+  // the WebSocket handlers nor the unmount cleanup touch a binding that is
+  // still in its temporal dead zone (both are declared further down).
+  useEffect(() => {
+    stopMicRef.current = stopMic;
+    enqueueWavRef.current = enqueueWav;
+  }, [stopMic, enqueueWav]);
 
   if (!enabled) return null;
 
