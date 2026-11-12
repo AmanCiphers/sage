@@ -1,10 +1,14 @@
 # SAGE Change Log
 
-A running, chronological record of changes to SAGE's architecture and behavior.
-
-- **Design rationale (older, formalized decisions):** [DECISIONS.md](DECISIONS.md)
-- **How the running system works:** [HOW_IT_WORKS.md](HOW_IT_WORKS.md)
-- **Full target architecture:** [../ArchitectureV2.md](../ArchitectureV2.md)
+> **What this document contains:** A running, chronological record of changes to
+> SAGE's architecture, behavior, tools, prompts, and data model. Part A lists
+> landed changes newest-first; Part B keeps the employee-worker design record;
+> Part C is a hardening backlog. Each entry records date, area, change, files,
+> and why. This is a **historical record**, annotated rather than rewritten.
+>
+> - **Design rationale (older, formalized decisions):** [DECISIONS.md](DECISIONS.md)
+> - **How the running system works:** [HOW_IT_WORKS.md](HOW_IT_WORKS.md)
+> - **Full target architecture:** [ArchitectureV2.md](ArchitectureV2.md)
 
 This file exists because not every change made it into `DECISIONS.md`. Anything
 that changes *how SAGE behaves, what it trusts, or how its parts talk to each
@@ -31,6 +35,361 @@ section so they are never confused with shipped behavior.
 
 Changes from the web-UI integration work that were **not** recorded in
 `DECISIONS.md`.
+
+## A48 — Engineering audit: undefined names, subprocess deadlocks, capability routing  *(2026-11-12)*
+
+- **Area:** Tools / Agents / Permissions / Persistence / Skills / Interfaces
+- **Change:**
+  - `skill_view(version=...)` no longer raises `NameError` — the filter now
+    reads `[v for v in versions if ...]`.
+  - Agent backends no longer deadlock or crash on subprocess output. Hermes
+    drained stderr *after* stdout to completion, so a child that filled the
+    stderr pipe blocked forever; the non-zero-exit warning also referenced an
+    undefined `error` name. Both backends now drain stderr concurrently and
+    read lines through the shared `iter_output_lines()` helper, which chunks
+    the stream so a single line above asyncio's 64 KiB reader limit no longer
+    raises `LimitOverrunError`. OpenCode's streaming path had the same
+    stdout-then-stderr pattern.
+  - `_resolve_run_command_capabilities` matches network/system commands on
+    the **basename**, so `/usr/bin/curl` and `./curl` classify as NETWORK
+    instead of falling through to EXECUTE. Command sets hoisted to
+    `NETWORK_COMMANDS` / `SYSTEM_COMMANDS` (39 duplicate literals removed).
+  - Removed shadowed duplicate definitions: `_check`/`_parse` in
+    `verification.py`, `_has_destructive_patterns`/`_has_metacharacters` in
+    `shell_parser.py`, `list_skills`/`get_skill_versions` in
+    `skills/store.py`, and the function-local `run_all_migrations` /
+    `settings` re-imports.
+  - `app/interfaces/__init__.py` imports `PermissionDecision`, so
+    `get_type_hints()` on `IPermissionEngine` resolves instead of raising
+    `NameError`.
+- **Files:** `app/skills/tools.py`, `app/agents/interface.py`,
+  `app/agents/hermes.py`, `app/agents/opencode.py`, `app/tools/shell_parser.py`,
+  `app/execution/verification.py`, `app/skills/store.py`,
+  `app/persistence/schema.py`, `app/interfaces/__init__.py`,
+  `tests/unit/test_agent_backends.py`, `tests/unit/test_skill_tools.py`,
+  `tests/unit/test_shell_capabilities.py`, `tests/unit/test_permission_engine.py`
+- **Why:** These were confirmed defects, not style issues. The `NameError`
+  paths broke versioned skill reads and every failed Hermes run. The
+  stdout-before-stderr drain is a latent hang in production (OpenCode can take
+  20–30 min; a hung child means a hung assignment). The path-prefix gap let a
+  command change capability class by being invoked as `./curl`. The
+  duplicates were dead code that looked live.
+
+## A47 — Secret-file reads detected by argument, not by verb list  *(2026-11-12)*
+
+- **Area:** Permissions
+- **Change:** The credential rule in `classify_command` matched only
+  `cat|cp|mv|rsync`. Replaced with `_touches_secret_file()`: the command is
+  tokenized with `shlex`, `$HOME` expanded, and every argument's path
+  components checked against the secret-file/directory sets. Any reader is
+  caught (`less`, `head`, `grep`, `base64`, `xxd`, `strings`, `tar czf ~/.ssh`).
+  Tunnel-vision exclusions keep it quiet where it should be: listing/navigation
+  commands (`ls`, `cd`, `find`, `tree`) and template files
+  (`.env.example`, `.sample`, `.template`, `.dist`).
+- **Files:** `app/permissions/risk.py`, `tests/unit/test_permission_engine.py`
+- **Why:** Adversarial probing showed `less ~/.ssh/id_rsa`, `grep SECRET .env`,
+  `base64 ~/.ssh/id_rsa` and `tar czf x.tgz ~/.ssh` were all **allowed**, while
+  only the four listed verbs asked. With a prompt-injectable model as the
+  caller, any reader is a realistic credential-exfiltration route. See D48.
+
+## A46 — Regression tests for previously untested edges  *(2026-11-12)*
+
+- **Area:** Tests
+- **Change:** Added `tests/unit/test_agent_backends.py` (real subprocess stubs:
+  stderr-pipe overflow and overlong-line), `tests/unit/test_skill_tools.py`
+  (versioned skill read), `tests/unit/test_shell_capabilities.py`
+  (path-prefix routing), plus parametrized secret-path cases in
+  `test_permission_engine.py`. Each was confirmed to fail against the buggy
+  code and pass against the fix.
+- **Files:** new tests above; `tests/unit/test_permission_engine.py`
+- **Why:** The fake-provider suite covers internal contracts only. Agent
+  backends had **zero** tests, which is why two crash paths and a deadlock
+  survived. These tests exercise the real subprocess and permission edges.
+
+## A45 — Live date/time injected into the system prompt every turn  *(2026-11-11)*
+
+- **Area:** Context / Conversation / Employees / Tools
+- **Change:** `ContextBuilder._system_content()` now appends a
+  `## Current date and time` section (weekday, date, time, UTC offset, and the
+  configured IANA timezone) to the system message on every `build()` call.
+  Both the main agent and employee workers use `ContextBuilder`, so all of them
+  get a fresh clock each turn. The section is present even when no memory store
+  is configured. `get_current_time` / `get_current_date` now read the same
+  `settings.timezone` instead of the host OS timezone, so tool answers match the
+  injected clock.
+- **Files:** `app/context/builder.py`, `app/tools/builtin.py`,
+  `tests/unit/test_context_builder.py`, `docs/HOW_IT_WORKS.md`
+- **Why:** SAGE had no passive sense of "now" — the static system prompt was
+  composed once at startup, and the time/date tools only answer when the model
+  chooses to call them. Injecting a live clock makes date/time awareness
+  automatic and correct for relative requests ("today", "tomorrow", "this
+  afternoon") while the tools remain for explicit queries.
+
+---
+
+## A45 — Voice playback confirmation + truthful speak result  *(2026-11-11)*
+
+- **Area:** Voice / Tools / Web UI / Employees
+- **Change:** `/ws/audio` now carries a JSON metadata frame (`{"type":"audio",
+  "id":...}`) before each WAV; the browser replies `audio_played` or
+  `audio_failed`. `AudioBus` tracks connected sinks, delivery counts, and
+  waits for the acknowledgement, so `speak` returns `heard`, `delivered`, and
+  `chunks` instead of a blanket `spoken: true`. With no audio client it returns
+  `spoken: false`; unconfirmed playback carries a warning. Added the
+  `voice_status` tool and `GET /api/voice/status` (client count, effective TTS
+  URL, last playback error). `VoiceBar` reconnects both sockets with backoff,
+  shows audio connection state, and has a **test** button. Prompt rules now
+  scope work to the latest user message and forbid claiming playback without
+  `heard: true`. `assign_task` reuses an active duplicate and returns
+  `needs_confirmation` for a recently failed match instead of silently retrying
+  (`force=true` after the user agrees).
+- **Files:** `app/voice/audio_bus.py`, `app/voice/gateway.py`,
+  `app/tools/speak_tool.py`, `app/tools/builtin.py`,
+  `app/employees/supervisor.py`, `app/application.py`, `web/backend.py`,
+  `web/src/components/VoiceBar.tsx`, `app/conversation/authority.md`,
+  `app/conversation/tools.md`, `tests/unit/test_voice.py`
+- **Why:** `AudioBus.broadcast()` silently no-ops with zero subscribers and the
+  old `speak` tool still reported success, so SAGE claimed voice worked while
+  the browser received nothing (typically after a backend restart left a stale
+  audio socket). Separately, an older unresolved essay request resurfaced on a
+  later "try it" turn and was re-queued without asking. Playback now has to be
+  confirmed, and background work is scoped to the current request.
+
+---
+
+## A44 — Chunked TTS: pipelined synthesis + sequential playback  *(2026-11-11)*
+
+- **Area:** Voice / Tools / Web UI
+- **Change:** The TTS client now splits long text into sentence-aware chunks
+  (`SAGE_VOICE_TTS_CHUNK_CHARS`, default 220), requests them with bounded
+  prefetch, and broadcasts each WAV to `/ws/audio` as soon as it is ready.
+  `speak` and the final-text fallback stream chunks instead of waiting for one
+  large response. The browser now plays incoming WAV frames through a FIFO
+  queue (one `AudioBufferSourceNode` at a time), so multiple chunks never
+  overlap. The default Chatterbox URL moved to
+  `https://tts.thecloverforge.com/tts`.
+- **Files:** `app/voice/tts.py`, `app/tools/speak_tool.py`,
+  `app/application.py`, `app/config.py`, `app/voice/config.py`,
+  `web/src/components/VoiceBar.tsx`, `tests/unit/test_voice.py`, `.env.example`
+- **Why:** The TTS server now chunks internally (120-char pieces, crossfaded)
+  and returns one merged WAV; waiting for the whole result delayed speech
+  start. Client-side chunking lets the first sentence play while the rest
+  synthesizes. The sequential queue prevents garbled, overlapping audio when
+  several WAV frames arrive in quick succession.
+
+---
+
+## A43 — Stop an in-flight SAGE turn  *(2026-11-11)*
+
+- **Area:** Web UI / Backend / Conversation
+- **Change:** Added `POST /api/chat/stop`, which cancels the active streaming
+  turn. The composer's send button becomes a red **STOP** while SAGE is
+  working; it aborts the browser fetch and cancels the backend task. The SSE
+  stream ends with `{"stopped": true}` + `{"done": true}`.
+- **Files:** `web/backend.py`, `web/src/components/Console.tsx`
+- **Why:** Users need to terminate a long or runaway "thinking" turn without
+  waiting for the full response or killing the process.
+
+---
+
+## A42 — Web UI drops CORS; chat goes through same-origin proxy  *(2026-11-11)*
+
+- **Area:** Web UI / Backend
+- **Change:** Removed `CORSMiddleware` from the FastAPI backend. The frontend
+  chat stream now posts to the relative `/api/chat/stream`, served by the
+  Next.js rewrite to `:8000`, so requests are same-origin and need no CORS.
+- **Files:** `web/backend.py`, `web/src/components/Console.tsx`
+- **Why:** The Next.js dev server auto-shifts to another port when 3000 is
+  occupied (e.g. 3003). Chat previously hit `:8000` directly, so a mismatched
+  origin failed the CORS preflight with `400 Bad Request`. Routing through the
+  existing rewrite removes the cross-origin request entirely.
+
+---
+
+## A41 — Primary chat model moved to DeepSeek-V4.1-Flash-1017  *(2026-10-30)*
+
+- **Area:** Inference / Config
+- **Change:** The Nebius primary catalog entry now uses
+  `deepseek-ai/DeepSeek-V4.1-Flash-1017` (same priority 90, tool calling and
+  streaming enabled, reasoning off). The NVIDIA `openai/gpt-oss-20b` fallback,
+  OpenCode default model, and smart-guardian model are unchanged.
+- **Files:** `config/models.py`, `README.md`
+- **Why:** Requested upgrade of SAGE's primary chat model to the newer V4.1
+  Flash build.
+
+---
+
+## A40 — Voice turns stream through the chat pipeline  *(2026-10-30)*
+
+- **Area:** Voice / Web UI / Conversation Loop
+- **Change:**
+  - `/ws/voice` is now a **transcription-only** transport: it emits `state` and
+    `transcript` and passes `turn_handler=None` to `VoiceSession`.
+  - The browser inserts the transcript into the chat and starts a normal
+    `POST /api/chat/stream` turn with `voice: true`.
+  - `ConversationLoop.handle`/`handle_stream` accept `voice` and inject a
+    per-turn system instruction requiring the `speak` tool.
+  - `SAGEApplication.speak_text` + `speak_was_called` provide a fallback: if a
+    voice turn never calls `speak`, the final text is synthesized and
+    broadcast, so every voice response is audible.
+  - Voice mode survives approval continuation (`voice` query param on the
+    approve/deny endpoints).
+  - `VoiceBar` reports the transcript to `Console` instead of only rendering
+    SAGE's final response; the chat now shows the user's spoken line, the
+    thinking indicator, and streamed deltas/tool events.
+- **Files:** `app/voice/session.py`, `app/voice/gateway.py`,
+  `app/conversation/loop.py`, `app/tools/speak_tool.py`,
+  `app/application.py`, `app/interfaces/__init__.py`, `web/backend.py`,
+  `web/src/components/VoiceBar.tsx`, `web/src/components/Console.tsx`
+- **Why:** The voice gateway ran a non-streaming turn in parallel with the
+  chat, so the chat showed only the final reply (no user transcript, no
+  thinking spinner, no live deltas) and the model never received a signal that
+  it was a voice turn. Routing voice through the existing SSE path removes the
+  duplicate path and makes voice behave exactly like typed chat, with a
+  guaranteed spoken response.
+
+---
+
+## A39 — Documentation reconciled with the current codebase  *(2026-10-30)*
+
+- **Area:** Docs
+- **Change:**
+  - Added a "What this document contains" header to every file in `docs/`.
+  - Corrected living docs to match the working tree: `HOW_IT_WORKS.md`
+    (config names/defaults, LLM verifier, full tool list, memory v2, hybrid
+    retrieval, CLI/TUI, module map), `voice.md` (the `speak`-tool pipeline and
+    real file layout), and `RAG_IMPLEMENTATION.md` (reranker, session search).
+  - Annotated historical docs without rewriting them:
+    `WORKER_EMPLOYEE_PLAN.md` marked implemented; `ArchitectureV2.md` status
+    banners for memory (§30–33) and voice (§57–59); `DECISIONS.md` notes for
+    D5 (tokenizer), D7 (streaming), and D14 (hybrid RAG).
+  - Fixed broken `../ArchitectureV2.md` links (the file lives in `docs/`).
+- **Files:** `docs/CHANGELOG.md`, `docs/DECISIONS.md`, `docs/HOW_IT_WORKS.md`,
+  `docs/ArchitectureV2.md`, `docs/RAG_IMPLEMENTATION.md`,
+  `docs/WORKER_EMPLOYEE_PLAN.md`, `docs/voice.md`
+- **Why:** Several docs had drifted from the code (wrong defaults, a described
+  voice design that no longer exists, memory features marked unbuilt despite
+  being implemented behind flags, and incomplete tool/module inventories). This
+  pass makes the docs trustworthy again while preserving the historical record.
+
+## A38 — Voice fixes: stale-server port conflict, VoiceBar reconnect churn, gateway send errors  *(2026-10-29)*
+
+- **Area:** Voice / Web UI
+- **Change:**
+  - `VoiceBar` kept its `onResponse` callback in a ref so the `/ws/voice`
+    connection is stable (the inline arrow was re-running the connect effect
+    on every render, causing connect/disconnect churn and log spam).
+  - The voice gateway now wraps `send_text`/`send_bytes` in try/except so a
+    client that disconnects mid-turn no longer raises
+    `ClientDisconnected`/`WebSocketDisconnect` tracebacks.
+- **Files:** `web/src/components/VoiceBar.tsx`, `app/voice/gateway.py`
+- **Why:** After the voice module landed, a stale backend was still bound to
+  `:8000`, so a fresh `start-web.sh` hit `Address already in use` and the UI
+  talked to the old code. Clean restart + stable connection + graceful send
+  handling make the running voice slice reliable.
+
+## A37 — Voice module: push-to-talk / wake word → STT → SAGE → conversational line → TTS  *(2026-10-29)*
+
+- **Area:** Voice / Web UI / Config
+- **Change:**
+  - Added `app/voice/` package: `config`, `interfaces` (VAD/ASR/TTS/WakeWord
+    Protocols), `audio` (PCM/WAV helpers), `vad` (energy default, Silero
+    optional), `asr` (faster-whisper, lazy + off-loop), `tts` (Chatterbox
+    primary, Piper fallback), `wakeword` (openWakeWord, opt-in), `spoken`
+    (conversational line, option a), `session` (VoiceSession), `gateway`
+    (`/ws/voice` WebSocket).
+  - New `/ws/voice` endpoint (gated by `SAGE_FEATURE_VOICE=1`) and a `voice`
+    field on `/api/info` to gate the UI.
+  - `VoiceBar` component in the Web UI: mic capture (AudioContext →
+    16 kHz PCM16), push-to-talk hold + optional wake-word mode, WAV playback,
+    live transcript + spoken line; full response is pushed into the chat.
+  - Voice config block added to `Settings` (`SAGE_VOICE_*`) with
+    resource-light defaults for Apple-Silicon/CPU: no torch, lazy-loaded
+    models, `base.en` int8, push-to-talk default.
+  - `docs/voice.md` added; ArchitectureV2 §57-59 marked partially built.
+- **Files:** `app/voice/*`, `app/config.py`, `web/backend.py`,
+  `web/src/components/VoiceBar.tsx`, `web/src/components/Console.tsx`,
+  `tests/unit/test_voice.py`, `docs/voice.md`
+- **Why:** The voice architecture was designed (§57-59) but unimplemented
+  (empty `app/voice/`, deps declared but not installed). This delivers a
+  working vertical slice (talk to SAGE) with a wake-word/PTT trigger and a
+  concise spoken line, while keeping CPU/RAM low on the M4 (no torch, lazy
+  models, Chatterbox TTS as a network call).
+
+## A36 — Show the approved command + auto-continue after approval  *(2026-10-29)*
+
+- **Area:** Permissions / Web UI / Conversation
+- **Change:**
+  - Approval prompts now surface the **actual command**: the loop's display
+    resource is the normalized `command` for `run_command` (not `path`),
+    and the Web UI builds a `Run command: <cmd>` description/target. The
+    duplicated `write_file`/`patch`/`run_opencode` branches in
+    `web/backend.py` were collapsed and a bare `except` tightened.
+  - After the user approves an action, SAGE **continues the task** instead of
+    just confirming: `approve_pending` now tells the model to proceed to the
+    next step and stop at the next approval. The Web approve endpoint returns
+    any follow-up `pending_approval`, and `Console.tsx` re-shows the approval
+    banner automatically — so a multi-step job flows one approval at a time
+    without the user re-prompting.
+- **Files:** `app/conversation/loop.py`, `app/application.py`,
+  `web/backend.py`, `web/src/components/Console.tsx`,
+  `tests/unit/test_permission_engine.py`
+- **Why:** A `run_command` approval showed an empty target, so users had to
+  approve commands they couldn't see; and after approving, the turn ended
+  with a bare "Approved." confirmation, forcing the user to manually say
+  "continue" (and the model often dropped earlier steps, e.g. a `mkdir`).
+
+## A35 — Risk-based permissions, working smart guardian, session approval memory  *(2026-10-29)*
+
+- **Area:** Permissions / Tools / Web UI / Config
+- **Change:**
+  - New deterministic risk classifier (`app/permissions/risk.py`) maps every
+    invocation to `allow` / `review` / `ask` / `deny`. Ordinary reads, normal
+    shell commands, and ordinary file edits run silently; known-dangerous
+    commands ask; ambiguous shell constructs (`; | & $() xargs eval bash -c`,
+    heredocs, redirects) go to the smart guardian; catastrophic commands are
+    hard-denied and cannot be overridden by YOLO or approval.
+  - The engine (`app/permissions/engine.py`) now runs `run_command` and file
+    writes through that classifier before any bypass mode, reads approvals
+    from the allowlist, and consults the smart guardian asynchronously
+    (`check_async`) only for `review` results. It no longer references the
+    nonexistent `auto_allow_read` / `session_allow_write` /
+    `explicit_destructive` config attributes that raised `AttributeError`
+    whenever YOLO was off.
+  - Removed the stateless `requires_approval` hooks from `write_file`,
+    `patch`, and `run_command` (the loop's single `check_async` enforcement
+    point replaces them). `authorize_workspace` is now a registered tool.
+  - Approval memory is scoped: the approve endpoint accepts
+    `scope=session|permanent` (session by default). A session approval is
+    keyed by tool + normalized resource (`run_command:<cmd>`,
+    `write_file:<abs path>`), so repeating the same command no longer
+    re-prompts; different commands still do.
+  - `full_machine_access` (default `true`) grants SAGE access to the whole
+    Mac; sensitive files outside an explicitly authorized directory still
+    ask. Pointing SAGE at a directory (`authorize_workspace`, persistent)
+    makes relative paths resolve there and silences prompts for files inside
+    it. `is_path_authorized` honors the flag.
+  - Fixed the hardline `rm -rf` pattern so `/tmp/x` asks instead of being
+    hard-denied, while `/`, `/*`, `/home/...`, `/etc`, etc. remain
+    unbypassable denies.
+  - Fixed `SmartGuardian.assess` to return `GuardianAssessment` (with
+    lowercase verdicts) instead of a tuple, and removed the call to the
+    undefined `_run_smart_guardian_fallback`.
+  - Fixed the broken approval-panel JSX and missing `tool` field in the
+    Console `Approval` type so `next build` type-checks.
+- **Files:** `app/permissions/risk.py` (new), `app/permissions/engine.py`,
+  `app/permissions/smart.py`, `app/permissions/approval.py`,
+  `app/tools/file_tools.py`, `app/tools/shell_tools.py`,
+  `app/tools/workspace.py`, `app/config.py`, `app/conversation/loop.py`,
+  `app/application.py`, `web/backend.py`, `web/src/components/Console.tsx`,
+  `tests/unit/test_permission_engine.py`, `tests/unit/test_approvals_and_operations.py`
+- **Why:** Permission handling was both noisy and fragile. Web approvals were
+  one-shot (the allowlist was never updated), so the same read/write prompted
+  forever; with YOLO disabled the engine crashed on missing config
+  attributes; the smart guardian was called through a missing function and
+  returned the wrong type; and the hardline blocklist was dead code. The
+  user wants ordinary work to feel silent and safe, dangerous actions to ask
+  once, and catastrophic actions to be impossible.
 
 ## A1 — Web SSE stream bypasses the Next.js dev proxy  *(2026-10-20)*
 

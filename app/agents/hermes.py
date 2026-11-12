@@ -10,7 +10,7 @@ import shutil
 from collections.abc import AsyncIterator
 from pathlib import Path
 
-from app.agents.interface import AgentBackend, AgentEvent, AgentResult, AgentTask
+from app.agents.interface import AgentBackend, AgentEvent, AgentResult, AgentTask, iter_output_lines
 
 logger = logging.getLogger(__name__)
 
@@ -83,11 +83,18 @@ class HermesBackend(AgentBackend):
         )
 
         output_lines = []
+        stderr_lines = []
         session_id = None
 
+        async def drain_stderr() -> None:
+            # Must run concurrently with stdout: a full stderr pipe would
+            # otherwise block the child and deadlock the stdout loop.
+            async for line in iter_output_lines(self._process.stderr):
+                stderr_lines.append(line)
+
+        stderr_task = asyncio.create_task(drain_stderr())
         # Stream stdout
-        async for line in self._process.stdout:
-            line_str = line.decode("utf-8", errors="replace").rstrip("\n")
+        async for line_str in iter_output_lines(self._process.stdout):
             output_lines.append(line_str)
 
             # Extract session ID from output if present
@@ -95,15 +102,11 @@ class HermesBackend(AgentBackend):
             if extracted:
                 session_id = extracted
 
-        # Read stderr silently
-        async for _ in self._process.stderr:
-            pass
-
+        await stderr_task
         await self._process.wait()
 
-        output = "\n".join(output_lines)
-
         if self._process.returncode != 0:
+            error = "\n".join(stderr_lines[-20:])[:2000]
             logger.warning("Hermes exited with code %d: %s", self._process.returncode, error)
 
         return "\n".join(output_lines), session_id
@@ -246,13 +249,19 @@ class HermesBackend(AgentBackend):
         )
 
         output_lines = []
-        new_session_id = None
+        stderr_lines = []
 
         yield AgentEvent(type="start", message="Starting Hermes task...")
 
+        async def drain_stderr() -> None:
+            # Concurrent with stdout so a full stderr pipe cannot deadlock.
+            async for line in iter_output_lines(self._process.stderr):
+                stderr_lines.append(line)
+
+        stderr_task = asyncio.create_task(drain_stderr())
+
         # Stream stdout
-        async for line in self._process.stdout:
-            line_str = line.decode("utf-8", errors="replace").rstrip("\n")
+        async for line_str in iter_output_lines(self._process.stdout):
             yield AgentEvent(
                 type="progress",
                 message=line_str[:500],
@@ -265,10 +274,7 @@ class HermesBackend(AgentBackend):
             if extracted:
                 self._current_session_id = extracted
 
-        # Read stderr silently
-        async for _ in self._process.stderr:
-            pass
-
+        await stderr_task
         await self._process.wait()
 
         output = "\n".join(output_lines)

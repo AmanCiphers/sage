@@ -26,7 +26,6 @@ class MemoryInput(ToolInput):
 
 def _resolve_store(sage_store: MemoryStore) -> MemoryStore:
     """Return SAGE's store, or the current employee's if an employee is active."""
-    from app.config import settings
     from app.tools.workspace import current_employee_key
 
     key = current_employee_key()

@@ -109,7 +109,7 @@ Then ask SAGE:
 | **Verification** | ✅ | Deterministic re-checks: file content, patch diffs, exit codes |
 | **Crash Recovery** | ✅ | Startup recovers `UNKNOWN` tasks, reconciles operations, resumes sessions |
 | **Tests** | ✅ | 160 unit tests, scripted fake provider, live smoke test |
-| **Build/Lint** | ✅ | `ruff check app` clean, `npm run build` clean |
+| **Build/Lint** | ⚠️ | `npm run build` clean; no undefined names or shadowed definitions in `app` (7 `F` findings remain, all in the unused `app/permissions/utils.py`); ~280 remaining findings are whitespace/typing style — see CHANGELOG A48 |
 
 ---
 
@@ -239,7 +239,7 @@ python main.py
 ### Environment Variables
 ```bash
 # Required
-NEBIUS_API_KEY=sk-...          # DeepSeek-V4-Flash (chat)
+NEBIUS_API_KEY=sk-...          # DeepSeek-V4.1-Flash (chat)
 NVIDIA_API_KEY=nvapi-...       # Nemotron-3-Embed (embeddings)
 
 # Optional tuning

@@ -1,7 +1,12 @@
 # Decision Log
 
-Why SAGE is built the way it is. How it works: [HOW_IT_WORKS.md](HOW_IT_WORKS.md).
-Recent changes and proposed directions: [CHANGELOG.md](CHANGELOG.md).
+> **What this document contains:** The architecture decision log — one entry per
+> significant design choice, with the decision and its rationale (D1…D44).
+> Entries are **historical records**: they are annotated when superseded or when
+> the running system has moved on, but the original text is preserved. For
+> current behavior see [HOW_IT_WORKS.md](HOW_IT_WORKS.md); for the chronology of
+> changes see [CHANGELOG.md](CHANGELOG.md); for the target architecture see
+> [ArchitectureV2.md](ArchitectureV2.md).
 
 ## Context
 
@@ -74,6 +79,11 @@ tokenizer.
 is accurate enough for a threshold, and compaction's effectiveness is judged
 by whether the prompt actually dropped under the threshold.
 
+> **Updated (2026-10-30):** a real tokenizer is now available in
+> `app/context/tokens.py` (Qwen3-Embedding-8B, same model as embeddings) behind
+> `SAGE_FEATURE_REAL_TOKENIZER`. It defaults to off, so `chars/4` remains the
+> default estimate and the trigger logic above is unchanged.
+
 ## D6 — Removed Hermes' deterministic pre-pass pruning
 
 **Decision:** No separate "prune old tool results" pre-pass. Tool results in
@@ -98,6 +108,10 @@ No prompt-cache breakpoints, no streaming, no memory injection yet.
   summary change rarely).
 - Streaming is a UX layer over the loop; the loop returns final text today.
 
+> **Updated (2026-10-30):** streaming is now built (D20): the loop streams text
+> deltas, the CLI/TUI render them live, and the Web UI receives them over SSE.
+> `api_content` and prompt-cache breakpoints remain unused/deferred.
+
 ## D8 — Replaced the one-shot decision engine; left legacy modules in place
 
 **Decision:** `ConversationLoop` is the new `conversation_engine` in
@@ -121,6 +135,9 @@ only do if the denial comes back as context. Raising would abort the turn
 with no user-facing explanation. No approval flow exists yet — that arrives
 with the Operation Manager (ArchitectureV2 §27 approval binding).
 
+> **Updated (2026-10-30):** the approval flow now exists (D16; reworked in
+> A35/D44). Denials still return as tool results, not exceptions.
+
 ## D10 — No migration framework; `CREATE TABLE IF NOT EXISTS` at startup
 
 **Decision:** `app/persistence/schema.py` runs idempotent DDL on startup.
@@ -128,6 +145,10 @@ with the Operation Manager (ArchitectureV2 §27 approval binding).
 **Why:** One developer, one database, evolving schema — Alembic-style
 migrations are overhead with no payoff yet. The moment schema exists in
 production data, migrations become mandatory. Noted as tech debt.
+
+> **Updated (2026-10-30):** an additive migration framework now exists in
+> `app/persistence/migrations.py` (T2.1), with the v2 schema migration. Startup
+> DDL remains idempotent, but schema changes can now be versioned.
 
 ## D11 — Test infrastructure: scripted fake provider + DB fixtures
 
@@ -171,6 +192,11 @@ tool or the store. Memory is injected into the system prompt by
 `ContextBuilder` each turn — the file is tiny, so reading it is cheaper
 than managing a cache, and cache breakpoints are already deferred (D7).
 
+> **Updated (2026-10-30):** the default remains explicit, agent-curated
+> `memory.md`. Memory v2 (`SAGE_FEATURE_MEMORY_V2`) adds provenance,
+> supersession, and forgetting, but still writes explicitly — there is no
+> background auto-extraction pipeline.
+
 ## D14 — FTS5 for recall, no embeddings
 
 **Decision:** `messages_fts` (SQLite FTS5) indexes raw history on every
@@ -181,6 +207,12 @@ append, with a one-time backfill for pre-existing rows. Exposed as the
 Hermes proves this is enough (~20ms queries, no embedding dependency).
 Embeddings can be layered on later behind the same tool.
 
+> **Superseded in practice (2026-10-30):** hybrid RAG is live — `ContextBuilder`
+> merges FTS5 with embeddings (40/60 by default, optional cross-encoder
+> reranker), and `message_embeddings` stores vectors locally. The embedding
+> *generation* API is used; retrieval and cosine search stay local. See
+> [RAG_IMPLEMENTATION.md](RAG_IMPLEMENTATION.md) and ArchitectureV2 §34.
+
 ## D15 — Read-only file tools only
 
 **Decision:** `read_file` (line offset/limit, 100K char cap) and
@@ -190,6 +222,11 @@ Embeddings can be layered on later behind the same tool.
 machine) with zero safety surface. Write/patch tools need the approval
 flow and Operation Manager first (ArchitectureV2 §26-27) — a write tool
 today would either bypass the permission model or be unusable.
+
+> **Superseded (2026-10-30):** Phase 4 added `write_file` and `patch`, and the
+> approval/Operation Manager path now gates risky writes. Ordinary edits run
+> silently; sensitive files outside a trusted directory ask (A35/D44). File
+> tools are no longer read-only.
 
 ---
 
@@ -223,6 +260,11 @@ file) needlessly friction-heavy; a static "never destructive" would
 silently clobber data. The hook keeps the permission model generic —
 policy still only sees `destructive=True/False`.
 
+> **Superseded (2026-10-30):** per-tool `requires_approval` hooks were removed
+> (A35). The loop's single `PermissionEngine.check_async(tool, arguments)` is
+> now the enforcement point, backed by the deterministic risk classifier
+> (D44).
+
 ## D18 — Operations track approved and crash-relevant side effects
 
 **Decision:** Every execution through the approval path (and later,
@@ -240,10 +282,15 @@ cover the cases where a crash mid-flight actually matters.
 ## D19 — Relative file paths anchor to a workspace root
 
 **Decision:** Relative paths in `read_file`/`write_file`/`list_files`
-resolve under a configured workspace directory (`SAGE_WORKSPACE`, default
-`data/workspace`), never the process cwd. Missing parent directories are
-created on write. The system prompt states the workspace path and tells
+resolve under a configured workspace directory (`SAGE_WORKSPACE_PATH`,
+default `data/workspace`), never the process cwd. Missing parent directories
+are created on write. The system prompt states the workspace path and tells
 the model to use descriptive names with extensions.
+
+> **Updated (2026-10-30):** `authorize_workspace` can point SAGE at another
+> directory (persistent), and `full_machine_access` (default true) allows
+> absolute paths across the host; sensitive files outside a trusted directory
+> still ask (A35/D44).
 
 **Why:** Mirrors Hermes (`tools/file_tools_paths.py` — relative paths
 anchor to the authoritative workspace root, not process cwd). Live test
@@ -344,9 +391,9 @@ user's real files.
     `passed`
   A `failed` verification marks the task `failed` / the operation `FAILED`
   even though the tool itself "succeeded" — the executor's claim is not
-  trusted (ArchitectureV2 §60–61). No LLM verifier yet: deterministic
-  checks cover everything we run today; the LLM-verifier rung of §60 stays
-  for genuinely unverifiable work later.
+  trusted (ArchitectureV2 §60–61). At the time, no LLM verifier existed:
+  deterministic checks covered everything then; see the update below for the
+  opt-in LLM rung now available for genuinely unverifiable work.
 - **Approval gate at `start()`**: the target tool's dynamic
   `requires_approval` hook runs *before* a background task is created (and
   again in `_run` as defense in depth) — a state-changing command cannot
@@ -363,6 +410,11 @@ is cheap, deterministic, and catches the real failure mode: silent
 no-ops that still claim success. The `start()` gate closed a real hole:
 the dispatcher previously only re-ran the *static* permission check, so a
 dangerous background command would have run without consent.
+
+> **Updated (2026-10-30):** the LLM verifier rung now exists in
+> `app/execution/verification.py` (`_llm_verify`) behind
+> `SAGE_FEATURE_LLM_VERIFIER` (default off). Deterministic checks remain the
+> baseline.
 
 ---
 
@@ -743,3 +795,122 @@ roster/activity panel (Phase 9, API already exposed at `/api/workers*`).
 - A **`send_notification` tool** (SAGE-only, `employee_eligible=False`) lets SAGE send a **sounding** notification for something it deems important. Prompt guidance says not to double-notify reminders that already auto-send.
 
 **Why:** Users want desktop notifications for scheduled/proactive/reminder events and a way for SAGE to surface "something important." Silent auto-notifications for system events + sounding SAGE-initiated nudges balance usefulness against noise.
+
+### D44 — Risk-based permission policy (allow / review / ask / deny)
+
+**Decision:**
+- A single deterministic classifier (`app/permissions/risk.py`) owns risk for every invocation; the LLM never decides it. Four levels:
+  - `allow` — ordinary reads, normal shell commands, ordinary file edits: silent.
+  - `review` — ambiguous shell constructs (`; | & $() xargs eval bash -c`, heredocs, redirects): the smart guardian may auto-allow; otherwise ask.
+  - `ask` — known-dangerous actions (`sudo`, recursive `rm`, credential access, piping downloads to an interpreter): always human consent.
+  - `deny` — catastrophic/hardline actions (`rm -rf /`, `mkfs`, raw-device writes, shutdown): never allowed, including in YOLO.
+- The smart guardian can only refine `review`; it can never downgrade `ask` or `deny`.
+- `run_command` and file writes are classified before bypass modes (YOLO/off/approving contexts), so YOLO cannot bypass hardline.
+- Sensitive files (secrets/config, system paths, dotfiles, databases/SAGE data) written **outside** a trusted directory ask. Build/dependency files (`package.json`, lockfiles, `pyproject.toml`, Dockerfiles, CI, Makefile) are not sensitive. Ordinary files need no approval.
+- `full_machine_access` (default true) lets SAGE read/write the whole Mac. Pointing SAGE at a directory (`authorize_workspace`) trusts that directory fully, including sensitive-looking files inside it.
+- Approval memory is session-scoped by default and keyed by tool + normalized resource, so a repeated identical action is not re-prompted; the Web UI passes `scope=session`.
+
+**Why:** The prior policy was simultaneously too noisy (one-shot web approvals → endless prompts for reads/writes) and too fragile (missing config attributes crashed non-YOLO checks; the hardline list and smart guardian were never actually wired). Risk-based classification keeps normal work silent, asks once for genuinely dangerous actions, and makes catastrophic actions impossible while preserving the user's request for full-machine access and directory-level trust.
+
+### D45 — Voice turns reuse the streaming chat path; `/ws/voice` is transcription-only
+
+**Decision:**
+- The voice WebSocket no longer runs a SAGE turn. `VoiceSession` is
+  transcription-only when the gateway passes `turn_handler=None`; it emits the
+  transcript and the browser starts `POST /api/chat/stream` with
+  `{"voice": true}`.
+- `ConversationLoop` accepts a `voice` flag and injects a per-turn system
+  instruction requiring the `speak` tool. `SAGEApplication.speak_text` and
+  `speak_was_called()` provide a final-text TTS fallback if the model omits it.
+- Voice mode is carried through approval continuation via a `voice` query
+  param on the approve/deny endpoints.
+- The audio path is unchanged: `speak` → TTS → `AudioBus` → `/ws/audio`.
+
+**Why:** Running a separate non-streaming `handle()` turn inside the voice
+gateway duplicated the chat path. It produced an instant full response, no
+thinking spinner, no user transcript in the chat, and no per-turn voice signal
+to the model. Reusing the SSE path makes voice and typed chat behave
+identically and guarantees a spoken line for every voice turn, at the cost of
+one extra HTTP request per spoken turn.
+
+### D46 — Chunked TTS is client-pipelined; playback is a sequential queue
+
+**Decision:**
+- `ChatterboxTTS` splits text into sentence-aware chunks and requests them
+  with bounded prefetch (`SAGE_VOICE_TTS_PREFETCH`). `synthesize_chunks`
+  yields each WAV as soon as it arrives; `synthesize` merges them for callers
+  that still need a single buffer.
+- `speak` and `SAGEApplication.speak_text` broadcast each chunk to
+  `AudioBus` immediately rather than waiting for the whole response.
+- The browser (`VoiceBar`) keeps a FIFO of WAV frames and plays exactly one
+  `AudioBufferSourceNode` at a time.
+- Client chunking can be disabled with `SAGE_VOICE_TTS_CLIENT_CHUNKING=false`
+  to send the full text and use the server's single merged WAV.
+
+**Why:** The server already chunks internally (120 chars, 60 ms crossfade) but
+one request still returns one merged WAV, so time-to-first-audio scales with
+the whole reply. Pipelining chunks client-side lets speech start after the
+first sentence. The server crossfade applies only within a request, so gaps
+between client chunks are possible; the prefetch queue keeps them small.
+Sequential browser playback is required because broadcasting several WAVs
+would otherwise start overlapping sources and produce garbled audio.
+
+### D47 — Playback acknowledgement defines voice success; work follows the latest message
+
+**Decision:**
+- Each WAV is preceded by a JSON metadata frame with an `id`. The browser
+  replies `audio_played` after `AudioBufferSourceNode.start()` (or
+  `audio_failed` on decode/autoplay failure); `/ws/audio` is now bidirectional.
+- `AudioBus` reports `delivered` (sink count that accepted the frame) and can
+  wait for the acknowledgement. `speak` returns `heard`, `delivered`, and
+  `chunks`. No connected sink → `spoken: false`; synthesis without an ACK →
+  `heard: false` plus a warning.
+- `voice_status` (tool) and `GET /api/voice/status` expose the sink count,
+  effective TTS URL, and last playback error.
+- The conversation prompt scopes the turn to the **latest user message**.
+  Older unresolved requests are context, not active work; `assign_task` reuses
+  active duplicates and requires confirmation (`force=true`) before retrying a
+  recent failure.
+
+**Why:** "TTS synthesized and broadcast was attempted" was being reported as
+"the user heard it." A stale browser audio socket (no reconnect after a
+backend restart) made `broadcast()` a silent no-op while SAGE still claimed
+success. Delivery is not playback, so success must come from the client.
+Separately, a stale essay request in the global history was resumed during an
+unrelated voice-test turn and silently re-queued; conversation scope and task
+dedupe prevent background work from surprising the user.
+
+---
+
+## Phase 14 — Security Hardening
+
+### D48 — Secret access is detected by the path argument, not by a reader verb list
+
+**Decision:**
+- Credential detection in `classify_command` (`app/permissions/risk.py`)
+  tokenizes the command, expands `$HOME`, and inspects the **path components
+  of every argument** against the secret-file and secret-directory sets. The
+  previous rule matched a fixed verb list (`cat|cp|mv|rsync`) followed by a
+  secret path.
+- Any command that names a secret file is classified `ask` regardless of which
+  program reads it — `less`, `grep`, `head`, `base64`, `xxd`, `strings`,
+  `od`, `tar czf x.tgz ~/.ssh` all ask.
+- Two deliberate exclusions: directory listing/navigation (`ls`, `cd`, `find`,
+  `tree`, `du`) is not a content read, and template files
+  (`.env.example`, `.sample`, `.template`, `.dist`) hold no secrets.
+- This is a detection rule, not a new block: a match returns `ask` (human
+  consent), so an unusual-but-legitimate access still works with approval.
+
+**Why:** The verb-list rule is a blocklist of readers, and readers are
+unbounded. Probing showed `base64 ~/.ssh/id_rsa` and `grep SECRET .env` were
+allowed silently because neither verb was listed. The caller is a language
+model that can be influenced by prompt injection, so "find a reader not on the
+list" is a realistic exfiltration step, not an exotic one. Inspecting the
+argument is closed under new tools in a way a verb list can never be.
+Performing this on *arguments* rather than file *writes* also closes the
+asymmetry where writes to `.env` asked but reads did not.
+
+**Trade-off accepted:** false positives on legitimate inspection (for example
+a developer reading their own key to verify a fingerprint) now require one
+approval. That is the intended direction for a boundary whose failure is
+silent credential loss.

@@ -184,16 +184,6 @@ class SkillStore:
             return None
         return max(matching, key=lambda x: x.get("version", 0))
 
-    def list_skills(self) -> List[dict]:
-        """List all skills (latest version only)."""
-        entries = self._get_entries()
-        # Keep only latest version of each skill
-        latest = {}
-        for e in entries:
-            sid = e.get("skill_id")
-            if sid and (sid not in latest or e.get("version", 0) > latest[sid].get("version", 0)):
-                latest[sid] = e
-        return list(latest.values())
 
     def delete_skill(self, skill_id: str) -> dict:
         """Delete a skill entirely (all versions)."""
@@ -216,7 +206,3 @@ class SkillStore:
                 any(query in tag.lower() for tag in skill.get("tags", []))):
                 results.append(skill)
         return results
-
-    def get_skill_versions(self, skill_id: str) -> List[dict]:
-        entries = self._get_entries()
-        return [e for e in entries if e.get("skill_id") == skill_id]

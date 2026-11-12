@@ -9,20 +9,59 @@ from __future__ import annotations
 from abc import abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from app.conversation.models import AssistantResponse, LoopEvent, UserMessage
-from app.events.models import Event
-from app.tools.models import ToolDefinition, ToolClassification
-from app.tools.registry import ToolRegistry
-from app.inference.models import InferenceRequest, InferenceResponse, ModelRequirements
-from app.execution.models import ExecutionResult, ToolCall
-from app.employees.roster import EmployeeSpec
 from app.employees.budgets import Budget
 from app.employees.employee import EmployeeResult
-from app.scheduler.models import ScheduledJob, ProactiveRule
+from app.employees.roster import EmployeeSpec
+from app.events.models import Event
+from app.execution.models import ExecutionResult, ToolCall
+from app.inference.models import InferenceRequest, InferenceResponse, ModelRequirements
+from app.permissions.models import PermissionDecision
 from app.persistence.store import MessageStore, SessionStateStore, TaskStore
+from app.scheduler.models import ProactiveRule, ScheduledJob
+from app.tools.models import ToolClassification, ToolDefinition
+from app.tools.registry import ToolRegistry
+
+# Domain models are re-exported for importers, not used inside this module.
+__all__ = [
+    "AgentResult",
+    "AgentTask",
+    "AssistantResponse",
+    "Budget",
+    "EmployeeResult",
+    "EmployeeSpec",
+    "Event",
+    "ExecutionResult",
+    "IAgentBackend",
+    "IContextBuilder",
+    "IConversationEngine",
+    "IEventBus",
+    "IInferenceManager",
+    "IMemoryStore",
+    "IPermissionEngine",
+    "IProactiveEngine",
+    "IScheduler",
+    "IToolRegistry",
+    "IVerification",
+    "IWorkerPool",
+    "InferenceRequest",
+    "InferenceResponse",
+    "LoopEvent",
+    "MessageStore",
+    "ModelRequirements",
+    "PermissionDecision",
+    "ProactiveRule",
+    "ScheduledJob",
+    "SessionStateStore",
+    "TaskStore",
+    "ToolCall",
+    "ToolClassification",
+    "ToolDefinition",
+    "ToolRegistry",
+    "UserMessage",
+]
 
 
 @runtime_checkable
@@ -30,7 +69,9 @@ class IConversationEngine(Protocol):
     """Main conversation engine interface."""
     
     @abstractmethod
-    async def handle(self, message: UserMessage) -> AssistantResponse:
+    async def handle(
+        self, message: UserMessage, voice: bool = False
+    ) -> AssistantResponse:
         """Process a user message (non-streaming)."""
         ...
     
@@ -39,6 +80,7 @@ class IConversationEngine(Protocol):
         self,
         message: UserMessage,
         on_delta: Callable[[str], Awaitable[None]],
+        voice: bool = False,
     ) -> AssistantResponse:
         """Process a user message with streaming deltas."""
         ...

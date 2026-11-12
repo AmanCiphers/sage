@@ -7,9 +7,7 @@ Falls back to chars/4 estimation when tokenizer unavailable or feature disabled.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Optional
 
-from app.config import settings
 from app.feature_flags import real_tokenizer_enabled
 
 # Fallback constants (used when real tokenizer unavailable)

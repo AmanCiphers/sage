@@ -17,9 +17,8 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.feature_flags import compaction_v2_enabled
 from app.inference.manager import InferenceManager
-from app.inference.models import InferenceRequest, ModelRequirements
+from app.inference.models import InferenceRequest
 
 logger = logging.getLogger(__name__)
 
@@ -43,19 +42,6 @@ class Verification(BaseModel):
 
 
 Verifier = Callable[[dict, Any], list[dict[str, Any]]]
-
-
-def _check(name: str, ok: bool, detail: str = "") -> dict[str, Any]:
-    return {"check": name, "ok": bool(ok), "detail": detail}
-
-
-def _parse(output: Any) -> Any:
-    if isinstance(output, str):
-        try:
-            return json.loads(output)
-        except (ValueError, TypeError):
-            return None
-    return output
 
 
 def _check(name: str, ok: bool, detail: str = "") -> dict[str, Any]:

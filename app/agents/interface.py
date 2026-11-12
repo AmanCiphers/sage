@@ -2,9 +2,31 @@
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+
+
+async def iter_output_lines(stream: asyncio.StreamReader):
+    """Yield decoded, newline-stripped lines from a subprocess stream.
+
+    ``async for line in stream`` (and ``readline``) raise once a single line
+    exceeds asyncio's 64 KiB reader limit, and the stream cannot be consumed
+    past that point. Reading fixed chunks and splitting on newlines has no
+    line-length ceiling, so a huge JSON payload or stack trace streams safely.
+    """
+    buffer = b""
+    while True:
+        chunk = await stream.read(65536)
+        if not chunk:
+            break
+        buffer += chunk
+        while b"\n" in buffer:
+            line, buffer = buffer.split(b"\n", 1)
+            yield line.decode("utf-8", errors="replace")
+    if buffer:
+        yield buffer.decode("utf-8", errors="replace")
 
 
 @dataclass

@@ -10,9 +10,11 @@ import shutil
 from collections.abc import AsyncIterator
 from pathlib import Path
 
-from app.agents.interface import AgentBackend, AgentEvent, AgentResult, AgentTask
+from app.agents.interface import AgentBackend, AgentEvent, AgentResult, AgentTask, iter_output_lines
 
 logger = logging.getLogger(__name__)
+
+
 
 
 class OpenCodeBackend(AgentBackend):
@@ -86,11 +88,7 @@ class OpenCodeBackend(AgentBackend):
         # Stream stdout and stderr
         async def read_stream(stream, is_stderr=False):
             nonlocal session_id
-            while True:
-                line = await stream.readline()
-                if not line:
-                    break
-                line_str = line.decode("utf-8", errors="replace").rstrip("\n")
+            async for line_str in iter_output_lines(stream):
                 if is_stderr:
                     logger.debug("OpenCode stderr: %s", line_str)
                 else:
@@ -114,9 +112,6 @@ class OpenCodeBackend(AgentBackend):
 
         await asyncio.gather(stdout_task, stderr_task)
         await self._process.wait()
-
-        output = "\n".join(output_lines)
-        error_output = ""  # stderr handled separately
 
         if self._process.returncode != 0:
             logger.warning("OpenCode exited with code %d", self._process.returncode)
@@ -237,11 +232,17 @@ class OpenCodeBackend(AgentBackend):
         )
 
         output_lines = []
-        new_session_id = None
+        stderr_lines = []
+
+        async def drain_stderr() -> None:
+            # Concurrent with stdout so a full stderr pipe cannot deadlock.
+            async for line in iter_output_lines(self._process.stderr):
+                stderr_lines.append(line)
+
+        stderr_task = asyncio.create_task(drain_stderr())
 
         # Stream stdout
-        async for line in self._process.stdout:
-            line_str = line.decode("utf-8", errors="replace").rstrip("\n")
+        async for line_str in iter_output_lines(self._process.stdout):
             yield AgentEvent(
                 type="progress",
                 message=line_str[:500],
@@ -249,18 +250,19 @@ class OpenCodeBackend(AgentBackend):
             )
             output_lines.append(line_str)
 
-        # Read stderr silently
-        async for _ in self._process.stderr:
-            pass
-
+        await stderr_task
         await self._process.wait()
+
+        if self._process.returncode != 0:
+            logger.warning(
+                "OpenCode exited with code %d: %s",
+                self._process.returncode,
+                "\n".join(stderr_lines[-20:])[:2000],
+            )
 
         output = "\n".join(output_lines)
         duration = time.monotonic() - start
         success = self._process is not None and self._process.returncode == 0
-
-        if self._current_session_id:
-            new_session_id = self._current_session_id
 
         if success:
             yield AgentEvent(

@@ -5,8 +5,7 @@ Each profile specifies which tools are available.
 """
 
 from enum import Enum
-from typing import Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 class ToolsetProfile(str, Enum):

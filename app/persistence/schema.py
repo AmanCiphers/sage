@@ -129,9 +129,6 @@ async def initialize_schema(database) -> None:
     )
     await _backfill_fts(database)
     await database.commit()
-    
-    # Run additive migrations
-    from app.persistence.migrations import run_all_migrations
     await run_all_migrations(database)
 
 

@@ -7,10 +7,8 @@ Provides:
 """
 
 import json
-import os
 from typing import Optional
 
-from app.config import settings
 from app.skills.store import SkillStore
 from app.tools.models import ToolClassification, ToolDefinition
 from app.tools.schemas import ToolInput
@@ -38,9 +36,10 @@ class SkillIndexInput(ToolInput):
 
 def _resolve_skill_store() -> 'SkillStore':
     """Get the skill store (global or per-employee)."""
+    from pathlib import Path
+
     from app.config import settings
     from app.tools.workspace import current_employee_key
-    from pathlib import Path
 
     key = None
     try:
@@ -57,8 +56,6 @@ def _resolve_skill_store() -> 'SkillStore':
 
 
 def register_skill_tools(registry) -> None:
-    from app.skills.store import SkillStore
-    
     def skill_manage(action: str, skill_id: Optional[str] = None,
                      name: Optional[str] = None, description: Optional[str] = None,
                      content: Optional[str] = None, author: Optional[str] = None,
@@ -107,7 +104,7 @@ def register_skill_tools(registry) -> None:
         
         if version is not None:
             versions = store.get_skill_versions(skill_id)
-            matching = [v for v in v if v.get("version") == version]
+            matching = [v for v in versions if v.get("version") == version]
             if not matching:
                 return json.dumps({"error": f"Version {version} not found for skill {skill_id}"})
             skill = matching[0]
