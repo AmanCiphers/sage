@@ -914,3 +914,34 @@ asymmetry where writes to `.env` asked but reads did not.
 a developer reading their own key to verify a fingerprint) now require one
 approval. That is the intended direction for a boundary whose failure is
 silent credential loss.
+
+---
+
+## Phase 14 — Security Hardening
+
+### D49 — The hardline `rm` rule matches by argument, not by command position
+
+**Decision:**
+- Hardline destructive-delete detection no longer requires `rm` to sit at
+  command position. The pattern matches an optional path prefix and `rm`
+  anywhere a command can start — including after `;`, `&&`, `|`, `(`, a
+  backtick, and inside quotes — then evaluates the target against the
+  protected-root set as before.
+- Detection only. The *target* check is unchanged: `rm -rf ./build`,
+  `rm -rf node_modules`, and `rm -rf /tmp/x` still classify `ask`, not `deny`.
+- Deliberately not addressed here: shell quoting that reassembles a command
+  name (`'rm' -rf /`, `r''m -rf /`) still evades the regex. Closing that
+  needs the tokenized view, which is a larger change (see "Open" below).
+
+**Why:** The hardline blocklist is the layer that every bypass mode sits
+behind — YOLO, off mode, and approving contexts all run after it. Anchoring
+to command position meant `/bin/rm -rf /`, `cd / && rm -rf /`, and
+`bash -c 'rm -rf /'` fell through to `ask`: still a prompt, but one a user in
+a hurry approves. For a rule whose stated contract is "never bypassable", a
+narrower match than the danger deserves is a false sense of safety.
+
+**Open (deferred):** the class of evasion that survives is any trick that
+changes the *token stream* rather than the *text* — quote-splicing, aliases,
+`$(…)` substitution of the verb. The durable fix is to classify from the
+parsed token stream (`shell_parser`) rather than from the raw string. That is
+the same convergence as the capability-routing item: one parser, one verdict.

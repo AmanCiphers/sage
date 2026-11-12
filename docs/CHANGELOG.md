@@ -36,6 +36,22 @@ section so they are never confused with shipped behavior.
 Changes from the web-UI integration work that were **not** recorded in
 `DECISIONS.md`.
 
+## A49 — Hardline `rm` rule matched anywhere, not only at command position  *(2026-11-12)*
+
+- **Area:** Permissions
+- **Change:** `_RM_FLAG_PREFIX` in `app/permissions/approval.py` no longer
+  anchors to `_CMDPOS`. A recursive delete of a protected root is now
+  recognised when `rm` is path-prefixed (`/bin/rm -rf /`), chained
+  (`echo x; rm -rf /`), or nested in a shell (`bash -c 'rm -rf /'`). The
+  optional path prefix plus a word boundary keeps `charm` and `firm` from
+  matching, and relative targets (`rm -rf ./build`, `node_modules`) are
+  unaffected.
+- **Files:** `app/permissions/approval.py`, `tests/unit/test_permission_engine.py`
+- **Why:** Those five forms degraded from `deny` (never bypassable) to `ask`,
+  i.e. a prompt a rushed user clicks through. The hardline rule is the one
+  layer every other bypass sits behind, so a hole in it is worse than a hole
+  anywhere else. See D49.
+
 ## A48 — Engineering audit: undefined names, subprocess deadlocks, capability routing  *(2026-11-12)*
 
 - **Area:** Tools / Agents / Permissions / Persistence / Skills / Interfaces

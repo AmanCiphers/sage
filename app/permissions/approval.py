@@ -22,7 +22,12 @@ _HARDLINE_SYSTEM_DIRS = (
     r'/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|/boot|/boot/\*|/lib|/lib/\*'
 )
 
-_RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
+# ``rm`` matched anywhere rather than only at command position. A recursion
+# that is path-prefixed (``/bin/rm``), chained (``cd / && rm -rf /``), or
+# nested (``bash -c 'rm -rf /'``) is still a recursive delete of a system
+# root; anchoring to command position let those degrade from ``deny`` to
+# ``ask``. The basename boundary keeps ``charm``/``firm`` from matching.
+_RM_FLAG_PREFIX = r'(?:^|[\s;&|(`\'"\[])(?:[^\s;&|]*/)?rm\s+(-[^\s]*\s+)*'
 
 # Pre-compiled hardline patterns - NEVER bypassable
 # Boundary ensures `/tmp/x` is not mistaken for the root `/`.

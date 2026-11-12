@@ -135,6 +135,33 @@ def test_risk_classifier_matrix():
 @pytest.mark.parametrize(
     "command",
     [
+        "rm -rf /",
+        "/bin/rm -rf /",
+        "./rm -rf /",
+        "cd / && rm -rf /",
+        "echo x; rm -rf /",
+        "bash -c 'rm -rf /'",
+        "rm -rf /etc",
+        "rm -rf ~",
+    ],
+)
+def test_hardline_rm_is_denied_wherever_it_appears(command):
+    """Regression: the rm hardline rule was anchored to command position, so a
+    path prefix, a chained command, or a nested shell downgraded a recursive
+    delete of a system root from deny to ask."""
+    assert classify_command(command)[0] == RISK_DENY
+
+
+@pytest.mark.parametrize("command", ["charm hello", "firm -rf", "rm -rf ./build"])
+def test_hardline_rm_does_not_match_substrings_or_relative_paths(command):
+    """The widened matcher must not fire on command names that merely contain
+    'rm', nor on deletes outside the protected roots."""
+    assert classify_command(command)[0] != RISK_DENY
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
         "cat ~/.ssh/id_rsa",
         "less ~/.ssh/id_rsa",
         "head ~/.ssh/id_rsa",
