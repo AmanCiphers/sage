@@ -89,11 +89,61 @@ class Settings(BaseSettings):
     feature_llm_verifier: bool = False
     feature_memory_v2: bool = False
 
+    # --- Voice module (SAGE_FEATURE_VOICE=1 to enable) -----------------------
+    # Resource-light defaults for Apple-Silicon/CPU: lazy-loaded, small models,
+    # push-to-talk by default (wake word is opt-in to keep idle CPU low).
+    voice_sample_rate: int = 16000
+    voice_frame_ms: int = 30
+    voice_silence_ms: int = 700  # trailing silence before a turn is finalized
+    voice_max_turn_seconds: float = 60.0
+
+    # STT (faster-whisper, CTranslate2). Keep the model small for low load.
+    voice_asr_model: str = "base.en"
+    voice_asr_device: str = "cpu"
+    voice_asr_compute_type: str = "int8"
+
+    # VAD: energy-based by default (zero download); Silero ONNX used if the
+    # model file is present at voice_model_dir/silero_vad.onnx.
+    voice_vad_threshold: float = 0.02
+    voice_use_silero: bool = False
+
+    # Wake word (opt-in). openWakeWord ships pretrained keywords; "sage" needs
+    # a custom model, so default stays off and PTT is primary.
+    voice_wake_enabled: bool = False
+    voice_wake_keyword: str = "hey_jarvis"
+
+    # TTS: Chatterbox (local server) primary, Piper fallback.
+    voice_chatterbox_url: str = "https://tts.thecloverforge.com/tts"
+    voice_tts_primary: str = "chatterbox"
+    voice_tts_fallback: str = "piper"
+    voice_piper_voice: str = "en_US-lessac-medium"
+
+    # Chunked TTS. The server splits text into small pieces and crossfades
+    # them, but a single request still returns one merged WAV. Splitting the
+    # text here lets playback start after the first piece.
+    voice_tts_client_chunking: bool = True
+    voice_tts_chunk_chars: int = 220
+    voice_tts_prefetch: int = 2
+    voice_tts_timeout_seconds: float = 30.0
+
+    # Conversational line (option a): a concise spoken line distilled from the
+    # full written response. Uses an LLM call unless disabled (then it falls
+    # back to the final sentence of the response).
+    voice_spoken_llm: bool = True
+
+    # Where downloaded voice models live.
+    voice_model_dir: Path = Path("data/voice")
+
     # Toolset profile (coding, research, writing, verification, organization, full)
     toolset_profile: str = "full"
 
     # Disable workspace authorization checks (for testing)
     disable_workspace_auth: bool = False
+
+    # Full-machine access: absolute paths are allowed anywhere on the host.
+    # Sensitive files still require approval unless inside an authorized
+    # workspace (see app/permissions/risk.py).
+    full_machine_access: bool = True
 
     model_config = SettingsConfigDict(
         env_file=".env",

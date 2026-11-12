@@ -37,10 +37,19 @@ from app.permissions.engine import PermissionEngine
 from app.permissions.models import PermissionDecision
 from app.persistence.store import MessageStore
 from app.tools.registry import ToolRegistry
+from app.tools.speak_tool import reset_speak_flag
+
+VOICE_TURN_INSTRUCTION = (
+    "## Voice turn\n"
+    "The user is speaking to you through the voice interface. "
+    "Answer in text as usual AND call the `speak` tool exactly once with a "
+    "concise (1-2 sentence) spoken version of your answer. "
+    "The `speak` call is mandatory for every voice turn."
+)
 
 
 def arguments_resource(call: dict) -> str | None:
-    """Best-effort human-facing target of a tool call (path, query, ...)."""
+    """Best-effort human-facing target of a tool call (path, command, query, ...)."""
 
     raw = call.get("function", {}).get("arguments", "{}")
     try:
@@ -48,6 +57,10 @@ def arguments_resource(call: dict) -> str | None:
     except json.JSONDecodeError:
         return None
 
+    name = call.get("function", {}).get("name", "")
+    if name == "run_command":
+        command = " ".join(str(args.get("command", "")).split())
+        return command[:200] if command else None
     return args.get("path") or args.get("query") or None
 
 
@@ -107,25 +120,32 @@ class ConversationLoop:
         tid = args.get("task_id")
         return str(tid) if tid else None
 
-    async def handle(self, message: UserMessage) -> AssistantResponse:
-        return await self._run_turn(message, on_delta=None)
+    async def handle(
+        self, message: UserMessage, voice: bool = False
+    ) -> AssistantResponse:
+        return await self._run_turn(message, on_delta=None, voice=voice)
 
     async def handle_stream(
         self,
         message: UserMessage,
         on_delta: Callable[[str], Awaitable[None]],
+        voice: bool = False,
     ) -> AssistantResponse:
         """Same turn as handle(), but text deltas are delivered to
         on_delta as they arrive (live output for CLI/Web)."""
 
-        return await self._run_turn(message, on_delta=on_delta)
+        return await self._run_turn(message, on_delta=on_delta, voice=voice)
 
     async def _run_turn(
         self,
         message: UserMessage,
         on_delta: Callable[[str], Awaitable[None]] | None,
+        voice: bool = False,
     ) -> AssistantResponse:
         request_id = new_request_id()
+
+        # Reset speak flag at start of each turn
+        reset_speak_flag()
 
         self.logger.info(
             "[%s] REQUEST | %s", request_id, message.content
@@ -136,6 +156,8 @@ class ConversationLoop:
         await self.message_store.append_user(message.content)
 
         history = await self.context_builder.build()
+        if voice:
+            history.insert(1, {"role": "system", "content": VOICE_TURN_INSTRUCTION})
 
         final_content: str | None = None
         pending_approval_id: str | None = None
@@ -372,12 +394,13 @@ class ConversationLoop:
             return self._tool_error(f"Unknown tool: {name}"), None
 
         # SAGE authority: deterministic permission check, never the LLM.
-        # Pass the parsed arguments so argument-sensitive fast paths work
-        # (e.g. run_command with a read-only command like `git status`).
-        decision = self.permission_engine.check(tool, arguments)
+        # Async so ambiguous commands can be reviewed by the smart guardian
+        # before falling back to human approval.
+        decision = await self.permission_engine.check_async(tool, arguments)
 
-        # Dynamic hook: e.g. writing an existing file needs consent even
-        # though the tool itself is not statically destructive.
+        # Dynamic hook for the few tools that still need argument-sensitive
+        # consent (run_command and file writes are fully handled by the
+        # risk classifier above).
         if (
             decision == PermissionDecision.ALLOWED
             and tool.requires_approval
@@ -386,10 +409,14 @@ class ConversationLoop:
             decision = PermissionDecision.APPROVAL_REQUIRED
 
         if decision == PermissionDecision.APPROVAL_REQUIRED:
+            resource = arguments.get("path") or arguments.get("query")
+            if name == "run_command":
+                command = " ".join(str(arguments.get("command", "")).split())
+                resource = command[:200] or resource
             approval_id = await self.approval_manager.create_pending(
                 tool_name=name,
                 arguments=arguments,
-                resource=arguments.get("path"),
+                resource=resource,
             )
 
             self.logger.info(

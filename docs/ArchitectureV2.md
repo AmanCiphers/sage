@@ -1,5 +1,19 @@
 # SAGE V2
 
+> **What this document contains:** The long-term target architecture and
+> technical specification for SAGE: system definition, core principles, module
+> boundaries, execution/worker model, memory, context, permissions, scheduling,
+> voice, recovery, and observability. It is a **design document**, not a
+> description of the running system — each major section carries a build-status
+> banner (Built / Partially built / Planned). For current behavior see
+> [HOW_IT_WORKS.md](HOW_IT_WORKS.md); for rationale see
+> [DECISIONS.md](DECISIONS.md).
+>
+> **Terminology note:** "Worker" in this document means the in-process,
+> goal-driven **Employee** (`app/employees/`). The old one-shot OS
+> process-worker was removed (D28); read Worker/Worker Pool sections as the
+> employee model unless a section explicitly says otherwise.
+
 ## Corrected Architecture & Technical Specification
 
 **Project:** SAGE — Strategic Advisory & Guidance Engine
@@ -927,6 +941,27 @@ APPROVAL_REQUIRED
 DENIED
 ```
 
+Risk classification (implemented in `app/permissions/risk.py`) is deterministic
+and independent of the LLM:
+
+```text
+allow   ordinary read / normal command / ordinary file edit  -> ALLOWED (silent)
+review  ambiguous shell construct                            -> smart guardian, then ask
+ask     known-dangerous command                              -> APPROVAL_REQUIRED
+deny    catastrophic command                                 -> DENIED (never bypassable)
+```
+
+The classifier runs before any bypass mode (YOLO / off / approving context), so
+YOLO cannot approve a `deny`. The smart guardian may only refine `review`; it
+cannot downgrade `ask` or `deny`.
+
+File writes are silent for ordinary files and for files inside the current or
+an explicitly authorized workspace. Sensitive files (secrets/config, system
+paths, dotfiles, databases/SAGE data) outside a trusted directory ask.
+Build/dependency files are not sensitive. `full_machine_access` (default true)
+lets SAGE use the whole machine; `authorize_workspace` trusts a directory
+fully, including sensitive-looking files inside it.
+
 ---
 
 # 27. Approval Binding
@@ -963,6 +998,12 @@ Expires: 15:30
 Before execution, SAGE revalidates the approval.
 
 This prevents stale approvals from being reused for unrelated actions.
+
+Approvals also carry a memory scope. `session` (default) remembers the tool +
+normalized resource (`run_command:<cmd>`, `write_file:<abs path>`) for the
+session, so an identical repeated action does not re-prompt; a different
+command or path still does. `permanent` writes to the persistent allowlist.
+Hardline `deny` actions never produce an approval row.
 
 ---
 
@@ -1020,8 +1061,10 @@ DENIED_BY_TOOL_POLICY
 
 # 30. Memory Architecture
 
-> **Status: PARTIALLY BUILT.** Raw History and Long-Term Memory are implemented.
-> **Current State is NOT yet built** (planned). See the source audit below.
+> **Status: PARTIALLY BUILT.** Raw History is implemented. Long-Term Memory is
+> implemented (v1 markdown, plus opt-in v2 in `app/memory/store_v2.py` via
+> `SAGE_FEATURE_MEMORY_V2`). **Current State is NOT yet built** (planned). See
+> the source audit below.
 
 SAGE memory consists of:
 
@@ -1068,8 +1111,11 @@ It is not simply "the last 24 hours."
 
 # 31. Memory Provenance
 
-> **Status: PLANNED, NOT BUILT.** The current `MemoryStore` (a bounded
-> markdown file) has no per-fact provenance. This section is the target design.
+> **Status: BUILT (opt-in).** `app/memory/store_v2.py` records provenance
+> (`source_msg_id`, confidence, explicit/inferred) and lifecycle status when
+> `SAGE_FEATURE_MEMORY_V2=1`. The default v1 `MemoryStore` (a bounded markdown
+> file) remains provenance-free, so this section still describes the target for
+> the default path.
 
 Every extracted memory records provenance.
 
@@ -1096,9 +1142,10 @@ High-impact uncertain information should require confirmation before being treat
 
 # 32. Memory Evolution
 
-> **Status: PLANNED, NOT BUILT.** The current `MemoryStore` only dedupes
-> exact facts; it does not SUPERSEDE contradictory ones. This section is the
-> target design.
+> **Status: BUILT (opt-in).** `MemoryStoreV2.supersede()` marks a contradictory
+> fact `superseded` and links the replacement, while keeping the original
+> history intact. The default v1 `MemoryStore` only dedupes exact facts, so this
+> section still describes the target for the default path.
 
 If the user says:
 
@@ -1128,8 +1175,10 @@ Original conversation history remains unchanged.
 
 # 33. Forgetting
 
-> **Status: PARTIALLY BUILT.** `memory remove`/`clear` exist, but there is no
-> formal FORGOTTEN status or audit trail. This section is the target design.
+> **Status: PARTIALLY BUILT.** v1 supports `memory remove`/`clear`. v2
+> (`SAGE_FEATURE_MEMORY_V2`) adds a formal `forgotten` status and
+> `MemoryStoreV2.forget()`. A dedicated audit trail for forget operations is
+> still the target design.
 
 When the user asks SAGE to forget something:
 
@@ -1815,7 +1864,21 @@ SAGE decides whether the result deserves action.
 
 # 57. Voice Architecture
 
-**Full-duplex WebRTC with token-level streaming synthesis.**
+> **Status (2026-10-29):** a working vertical slice is **built** — see
+> `app/voice/` and [`docs/voice.md`](voice.md). The built slice is
+> push-to-talk (wake word opt-in) over **WebSocket + Web Audio**, not the
+> full-duplex WebRTC described below. Full-duplex WebRTC/AEC3 and
+> always-on wake streaming remain **planned / not built**.
+>
+> Built: VAD → faster-whisper ASR → transcript (`/ws/voice` is
+> transcription-only) → browser streams a normal chat turn with `voice: true`
+> → the model calls the **`speak`** tool → TTS (Chatterbox primary, Piper
+> fallback) → `AudioBus` → `/ws/audio` → browser speaker. The full written
+> response streams to the chat; a per-turn instruction requires `speak`, with a
+> final-text TTS fallback if the model omits it. `speak` is limited to one call
+> per turn. Barge-in (§58) and token-level streaming TTS (§59) are **planned**.
+
+Full-duplex WebRTC with token-level streaming synthesis.
 
 Pipeline:
 ```text
@@ -2004,9 +2067,9 @@ SAGE V2
 Status:
 Architecture finalization
 
-Active Workers:
+Active Employees:
 Alpha - repository analysis
-Bravo - idle
+Otto - idle
 
 Upcoming:
 Internship onboarding

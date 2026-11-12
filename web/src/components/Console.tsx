@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import EmployeePanel, { EmployeeRow, EmployeeLogLine } from "./EmployeePanel";
+import VoiceBar from "./VoiceBar";
 import { fmtClock, fmtElapsed, fmtMs, fmtChars, shortModel } from "@/lib/format";
 
 interface Line {
@@ -17,6 +18,7 @@ interface Line {
 interface Approval {
   id?: string;
   approval_id?: string;
+  tool?: string;
   description?: string;
   target?: string;
   worker_task_id?: string;
@@ -29,6 +31,7 @@ interface InfoResponse {
   runtime: string;
   store: string;
   endpoint: string;
+  voice: boolean;
 }
 
 interface SysEvent {
@@ -162,9 +165,9 @@ const createBootLines = () => [
   { id: 0, kind: "sys" as const, text: "sage online. personal intelligence core loaded.", at: 0, sealed: true },
 ];
 
-// SSE must bypass the Next.js dev proxy, which buffers compressed streamed
-// bodies until completion (breaking live deltas). Hit the backend directly.
-const SSE_BASE = "http://localhost:8000";
+// Chat SSE goes through the Next.js rewrite on the same origin, so the
+// backend needs no CORS. This also works when the dev server picks another port.
+const SSE_BASE = "";
 
 function Chip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
@@ -200,6 +203,7 @@ export default function Console() {
     runtime: "python 3.12",
     store: "sqlite",
     endpoint: "POST /api/chat/stream",
+    voice: false,
   });
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -227,6 +231,9 @@ export default function Console() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const lastApprovalId = useRef<string | undefined>(undefined);
+  const voiceTurnRef = useRef(false);
+  const abortRef = useRef<AbortController | null>(null);
+  const stopRequestedRef = useRef(false);
 
   const push = useCallback((kind: Line["kind"], text: string) => {
     setLines((cur) => [
@@ -478,14 +485,14 @@ export default function Console() {
     };
   }, [busy, push]);
 
-  const handleSendMessage = useCallback(async () => {
-    const msg = input.trim();
-    if (!msg || busy) return;
-
-    setInput("");
+  const sendChatMessage = useCallback(async (msg: string, voice = false) => {
+    if (!msg.trim() || busy) return;
+    const text = msg.trim();
+    voiceTurnRef.current = voice;
+    stopRequestedRef.current = false;
     setBusy(true);
     setThinking(true);
-    push("in", `> ${msg}`);
+    push("in", `> ${text}`);
 
     const started = performance.now();
     let outChars = 0;
@@ -496,10 +503,14 @@ export default function Console() {
     let sawNotice = false;
 
     try {
+      const controller = new AbortController();
+      abortRef.current = controller;
+
       const res = await fetch(`${SSE_BASE}/api/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: msg }),
+        body: JSON.stringify({ message: msg, voice }),
+        signal: controller.signal,
       });
 
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -609,10 +620,16 @@ export default function Console() {
 
       setApiUp(true);
     } catch (e) {
-      push("tool", `[err] ${e instanceof Error ? e.message : String(e)}`);
-      seal("sage");
-      setApiUp(false);
+      if (stopRequestedRef.current) {
+        push("sys", ":: stopped");
+        status = "STOP";
+      } else {
+        push("tool", `[err] ${e instanceof Error ? e.message : String(e)}`);
+        seal("sage");
+        setApiUp(false);
+      }
     } finally {
+      abortRef.current = null;
       const ms = performance.now() - started;
       setStats((cur) => ({
         turns: cur.turns + 1,
@@ -626,6 +643,29 @@ export default function Console() {
       focusComposer();
     }
   }, [input, busy, push, append, seal, focusComposer]);
+
+  const handleSendMessage = useCallback(async () => {
+    const msg = input.trim();
+    if (!msg || busy) return;
+    setInput("");
+    await sendChatMessage(msg);
+  }, [input, busy, sendChatMessage]);
+
+  const handleStop = useCallback(async () => {
+    if (!busy) return;
+    stopRequestedRef.current = true;
+    setThinking(false);
+    seal("sage");
+    abortRef.current?.abort();
+    abortRef.current = null;
+    try {
+      await fetch("/api/chat/stop", { method: "POST" });
+    } catch {
+      // backend may already be finishing; the aborted stream is enough
+    }
+    setBusy(false);
+    focusComposer();
+  }, [busy, seal, focusComposer]);
 
   const handleApprove = useCallback(
     async (approved: boolean) => {
@@ -642,7 +682,11 @@ export default function Console() {
       push("in", `> ${approved ? "yes" : "no"}`);
 
       try {
-        const res = await fetch(`/api/approvals/${approvalId}/${approved ? "approve" : "deny"}`, {
+        const params = new URLSearchParams();
+        if (approved) params.set("scope", "session");
+        if (voiceTurnRef.current) params.set("voice", "true");
+        const query = params.toString();
+        const res = await fetch(`/api/approvals/${approvalId}/${approved ? "approve" : "deny"}${query ? `?${query}` : ""}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({}),
@@ -654,7 +698,14 @@ export default function Console() {
           return;
         }
 
-        push("sage", data.response || (approved ? "Approved." : "Declined."));
+        if (data.pending_approval) {
+          const next = data.pending_approval;
+          lastApprovalId.current = next.id ?? next.approval_id;
+          setApproval(next);
+          push("sys", `:: approval required · ${next.description || next.target || ""}`);
+        } else {
+          push("sage", data.response || (approved ? "Approved." : "Declined."));
+        }
         setStats((cur) => ({ ...cur, turns: cur.turns + 1, lastStatus: "OK" }));
         setApiUp(true);
       } catch (e) {
@@ -706,7 +757,7 @@ return (
       <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[1fr_320px] gap-3">
         {/* Main column: chat + employees */}
         <div className="flex min-h-0 flex-col overflow-hidden">
-          <div className="border border-zinc-800 bg-zinc-950 flex flex-col min-h-0 h-[60vh] ">
+          <div className="border border-zinc-800 bg-zinc-950 flex flex-col min-h-0 h-[90vh] ">
             <div
               ref={logRef}
               className="flex-1 overflow-y-auto px-5 py-4 text-[14px] leading-relaxed "
@@ -797,8 +848,8 @@ return (
                         <pre className="mt-1 overflow-x-auto border border-zinc-800 bg-zinc-950 px-3 py-2 text-[11px] text-zinc-300 rounded text-wrap break-all">
                           {approval.target}
                         </pre>
-                      )}
-                    </div>
+                      </div>
+                    )}
                   </div>
                   <div className="mt-4 flex gap-2">
                     <button
@@ -822,6 +873,12 @@ return (
               </div>
             )}
 
+            <VoiceBar
+              enabled={info.voice}
+              busy={busy}
+              onTranscript={(text) => sendChatMessage(text, true)}
+            />
+
             <div className="composer flex items-start gap-3 border-t border-zinc-800 px-5 py-4">
               <span className="pt-2 text-zinc-500 font-mono text-[13px]">{">>"}</span>
               <textarea
@@ -837,11 +894,15 @@ return (
               />
               <button
                 type="button"
-                onClick={handleSendMessage}
-                disabled={busy || !input.trim()}
-                className="mt-1 shrink-0 border border-zinc-700 px-4 py-1.5 text-[12px] uppercase tracking-[0.1em] font-medium text-zinc-100 transition-colors hover:border-zinc-400 hover:bg-zinc-800/50 disabled:border-zinc-900 disabled:text-zinc-700 disabled:hover:bg-transparent rounded"
+                onClick={busy ? handleStop : handleSendMessage}
+                disabled={busy ? false : !input.trim()}
+                className={`mt-1 shrink-0 border px-4 py-1.5 text-[12px] uppercase tracking-[0.1em] font-medium transition-colors rounded ${
+                  busy
+                    ? "border-rose-500/60 text-rose-300 hover:bg-rose-500/10"
+                    : "border-zinc-700 text-zinc-100 hover:border-zinc-400 hover:bg-zinc-800/50 disabled:border-zinc-900 disabled:text-zinc-700 disabled:hover:bg-transparent"
+                }`}
               >
-                {busy ? "..." : "SEND"}
+                {busy ? "STOP" : "SEND"}
               </button>
             </div>
           </div>

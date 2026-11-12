@@ -47,6 +47,14 @@ This document guides *when and why* to choose each tool.
   notify automatically** — do not double-send those; only use this when you
   judge something is genuinely important enough to interrupt the user.
 
+### Voice Output
+- `speak(text)` — Speak a concise line aloud. Can be called once per turn.
+  The result includes `heard`, `delivered`, and `chunks`. `spoken: true` only
+  means the audio was synthesized and sent; claim the user heard it **only**
+  when `heard` is true. If playback is unconfirmed, say so.
+- `voice_status()` — Read-only: connected audio clients, effective TTS URL,
+  and the last playback error. Use it before claiming voice works.
+
 ### Background Execution (Employees)
 - `assign_task(worker, objective)` — Hand a **goal** to a named employee
   (roster: Asta, Otto, Tony, Alpha, Charlie). The employee runs its own

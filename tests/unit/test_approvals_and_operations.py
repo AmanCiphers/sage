@@ -136,11 +136,8 @@ def test_write_file_creates_missing_parents_and_rejects_dir(tmp_path):
 
 def test_relative_paths_anchor_to_workspace(tmp_path, monkeypatch):
     from app.config import settings
-    from app.tools.file_tools import (
-        _write_needs_approval,
-        resolve_path,
-        write_file,
-    )
+    from app.permissions.risk import RISK_ALLOW, classify_file_write
+    from app.tools.file_tools import resolve_path, write_file
 
     monkeypatch.setattr(settings, "workspace_path", tmp_path)
 
@@ -149,22 +146,19 @@ def test_relative_paths_anchor_to_workspace(tmp_path, monkeypatch):
     assert resolve_path("notes.md") == (tmp_path / "notes.md").resolve()
     assert resolve_path("sub/notes.md") == (tmp_path / "sub" / "notes.md").resolve()
 
-    # Inside the workspace, editing an existing file needs no approval.
-    assert _write_needs_approval({"path": "notes.md"}) is False
-    assert _write_needs_approval({"path": "fresh.md"}) is False
+    # Inside the workspace, ordinary file edits need no approval.
+    assert classify_file_write(str(tmp_path / "notes.md"))[0] == RISK_ALLOW
+    assert classify_file_write(str(tmp_path / "fresh.md"))[0] == RISK_ALLOW
 
 
-def test_write_file_never_needs_approval(tmp_path):
-    from app.tools.file_tools import _write_needs_approval
+def test_write_file_risk_policy(tmp_path):
+    from app.permissions.risk import RISK_ALLOW, RISK_ASK, classify_file_write
 
-    # A5: file edits never require approval — even outside the workspace.
-    existing = tmp_path / "a.txt"
-    existing.write_text("old")
-
-    assert _write_needs_approval({"path": str(existing)}) is False
-    assert _write_needs_approval({"path": str(tmp_path / "b.txt")}) is False
-    assert _write_needs_approval({"path": "notes.md"}) is False
-    assert _write_needs_approval({}) is False
+    # Ordinary files are edited silently; protected files ask.
+    assert classify_file_write(str(tmp_path / "a.txt"))[0] == RISK_ALLOW
+    assert classify_file_write(str(tmp_path / "package.json"))[0] == RISK_ALLOW
+    assert classify_file_write(str(tmp_path / ".env"))[0] == RISK_ASK
+    assert classify_file_write(str(tmp_path / "server.pem"))[0] == RISK_ASK
 
 
 # --- OperationManager ---

@@ -20,7 +20,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import time
+from datetime import UTC, datetime, timedelta
 
 from app.employees.budgets import Budget
 from app.employees.employee import Employee, EmployeeResult
@@ -96,6 +98,57 @@ class Supervisor:
             )
         except Exception:
             logger.debug("event publish failed", exc_info=True)
+
+    @staticmethod
+    def _normalize_objective(text: str) -> str:
+        return " ".join(re.sub(r"[^a-z0-9 ]", " ", (text or "").lower()).split())
+
+    @classmethod
+    def _objectives_match(cls, left: str, right: str) -> bool:
+        a = cls._normalize_objective(left)
+        b = cls._normalize_objective(right)
+        if not a or not b:
+            return False
+        if a == b:
+            return True
+        words_a = set(a.split())
+        words_b = set(b.split())
+        if not words_a or not words_b:
+            return False
+        overlap = len(words_a & words_b) / len(words_a | words_b)
+        return overlap >= 0.8
+
+    @staticmethod
+    def _is_recent(task: dict, minutes: int = 30) -> bool:
+        created = task.get("created_at")
+        if not created:
+            return True
+        try:
+            stamp = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=UTC)
+        except (ValueError, TypeError):
+            return True
+        return datetime.now(UTC) - stamp <= timedelta(minutes=minutes)
+
+    async def find_duplicate(self, worker: str, objective: str) -> dict | None:
+        """Return a matching recent task, if any.
+
+        Used by ``assign_task`` to avoid duplicate assignments: an active
+        (queued/running) match is reused, while a recently failed match
+        requires the user's confirmation before it is retried.
+        """
+        spec = get_spec(worker)
+        recent = await self.task_store.list_for_worker(spec.key, limit=20)
+        for task in recent:
+            if not self._objectives_match(task.get("objective") or "", objective):
+                continue
+            status = task.get("status")
+            if status in ("queued", "running"):
+                return {"reason": "active", "task": task}
+            if status == "failed" and self._is_recent(task):
+                return {"reason": "failed", "task": task}
+        return None
 
     async def assign(self, worker: str, objective: str) -> str:
         """Create a durable task and run it on the named employee."""

@@ -13,7 +13,6 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -29,6 +28,9 @@ logger = get_logger(__name__)
 
 # Global SAGE application instance
 sage_app: SAGEApplication | None = None
+
+# The chat turn currently streaming (used by POST /api/chat/stop).
+_active_turn_task: asyncio.Task | None = None
 
 # WebSocket connection manager
 class ConnectionManager:
@@ -201,18 +203,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="SAGE Backend", lifespan=lifespan)
 
-# CORS for Next.js dev
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 
 class ChatRequest(BaseModel):
     message: str
+    voice: bool = False
 
 
 class ApprovalRequest(BaseModel):
@@ -250,6 +244,19 @@ async def info():
         "runtime": "python 3.12",
         "store": "sqlite",
         "endpoint": "POST /api/chat/stream",
+        "voice": __import__("app.feature_flags", fromlist=["voice_enabled"]).voice_enabled(),
+    }
+
+
+@app.get("/api/voice/status")
+async def voice_status():
+    if not sage_app:
+        return {"error": "SAGE not initialized"}
+    tts = getattr(sage_app, "tts", None)
+    return {
+        "tts_configured": tts is not None,
+        "tts_url": getattr(tts, "url", None),
+        **sage_app.audio_bus.status(),
     }
 
 
@@ -258,7 +265,7 @@ async def chat(request: ChatRequest):
     if not sage_app:
         return {"error": "SAGE not initialized"}
     response: AssistantResponse = await sage_app.conversation_engine.handle(
-        UserMessage(content=request.message)
+        UserMessage(content=request.message), voice=request.voice
     )
     return {
         "content": response.content,
@@ -302,9 +309,7 @@ async def chat_stream(request: ChatRequest):
         elif event.type == "approval":
             # Build a clear description with the actual command being run
             tool_name = event.tool_name
-            resource = event.resource
-            
-            # Build a clear description with the actual command
+
             if tool_name == "run_command":
                 cmd = event.resource or ""
                 description = f"Run command: {cmd}"
@@ -315,7 +320,7 @@ async def chat_stream(request: ChatRequest):
                     import json
                     args = json.loads(event.resource or "{}")
                     obj = args.get("objective", "")
-                except:
+                except Exception:
                     pass
                 description = f"OpenCode: {obj[:100]}{'...' if len(obj) > 100 else ''}"
                 target = obj[:200] + ("..." if len(obj) > 200 else "")
@@ -325,28 +330,10 @@ async def chat_stream(request: ChatRequest):
                     import json
                     args = json.loads(event.resource or "{}")
                     obj = args.get("objective", "")
-                except:
+                except Exception:
                     pass
                 description = f"Hermes: {obj[:100]}{'...' if len(obj) > 100 else ''}"
                 target = obj[:200] + ("..." if len(obj) > 200 else "")
-            elif tool_name == "run_opencode":
-                obj = ""
-                try:
-                    import json
-                    args = json.loads(event.resource or "{}")
-                    obj = args.get("objective", "")
-                except:
-                    pass
-                description = f"OpenCode: {obj[:100]}{'...' if len(obj) > 100 else ''}"
-                target = obj[:200] + ("..." if len(obj) > 200 else "")
-            elif tool_name == "write_file":
-                path = event.resource or ""
-                description = f"Write file: {path}"
-                target = path
-            elif tool_name == "patch":
-                path = event.resource or ""
-                description = f"Patch file: {path}"
-                target = path
             elif tool_name == "write_file":
                 path = event.resource or ""
                 description = f"Write file: {path}"
@@ -358,7 +345,7 @@ async def chat_stream(request: ChatRequest):
             else:
                 description = f"Run {tool_name}"
                 target = event.resource or ""
-            
+
             msg = {
                 "approval": {
                     "id": event.approval_id,
@@ -379,79 +366,140 @@ async def chat_stream(request: ChatRequest):
             response = await sage_app.conversation_engine.handle_stream(
                 UserMessage(content=request.message),
                 on_delta=on_delta,
+                voice=request.voice,
             )
             response_holder["response"] = response
+            if request.voice and response.content:
+                from app.tools.speak_tool import speak_was_called
+
+                if not speak_was_called():
+                    await sage_app.speak_text(response.content)
         finally:
             sage_app.conversation_engine.on_event = original_on_event
             await delta_queue.put(None)
             await loop_event_queue.put(None)
 
     async def event_generator():
+        global _active_turn_task
         encoder = json.JSONEncoder()
         task = asyncio.create_task(run_turn())
+        _active_turn_task = task
+        stopped = False
 
-        delta_done = False
-        loop_done = False
+        try:
+            delta_done = False
+            loop_done = False
 
-        while not (delta_done and loop_done):
-            # Wait for next item from either queue
-            delta_task = asyncio.create_task(delta_queue.get())
-            loop_task = asyncio.create_task(loop_event_queue.get())
+            while not (delta_done and loop_done):
+                # Wait for next item from either queue
+                delta_task = asyncio.create_task(delta_queue.get())
+                loop_task = asyncio.create_task(loop_event_queue.get())
 
-            done, pending = await asyncio.wait(
-                [delta_task, loop_task],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+                done, pending = await asyncio.wait(
+                    [delta_task, loop_task],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
 
-            for completed in done:
-                item = completed.result()
-                if item is None:
-                    # Mark the corresponding queue as done
-                    if completed is delta_task:
-                        delta_done = True
-                    else:
-                        loop_done = True
-                elif isinstance(item, str):
-                    yield f"data: {encoder.encode({'delta': item})}\n\n"
-                elif isinstance(item, dict):
-                    yield f"data: {encoder.encode(item)}\n\n"
+                for completed in done:
+                    item = completed.result()
+                    if item is None:
+                        # Mark the corresponding queue as done
+                        if completed is delta_task:
+                            delta_done = True
+                        else:
+                            loop_done = True
+                    elif isinstance(item, str):
+                        yield f"data: {encoder.encode({'delta': item})}\n\n"
+                    elif isinstance(item, dict):
+                        yield f"data: {encoder.encode(item)}\n\n"
 
-            for p in pending:
-                p.cancel()
+                for p in pending:
+                    p.cancel()
 
-        await task
+            try:
+                await task
+            except asyncio.CancelledError:
+                stopped = True
 
-        response = response_holder.get("response")
-        if response:
-            if response.pending_approval:
-                pa = dict(response.pending_approval)
-                pa.setdefault("id", pa.get("approval_id"))
-                yield f"data: {encoder.encode({'approval': pa})}\n\n"
-            yield f"data: {encoder.encode({'done': True})}\n\n"
-        else:
-            yield f"data: {encoder.encode({'error': 'No response generated'})}\n\n"
+            if stopped:
+                yield f"data: {encoder.encode({'stopped': True})}\n\n"
+                yield f"data: {encoder.encode({'done': True})}\n\n"
+                return
+
+            response = response_holder.get("response")
+            if response:
+                if response.pending_approval:
+                    pa = dict(response.pending_approval)
+                    pa.setdefault("id", pa.get("approval_id"))
+                    yield f"data: {encoder.encode({'approval': pa})}\n\n"
+                yield f"data: {encoder.encode({'done': True})}\n\n"
+            else:
+                yield f"data: {encoder.encode({'error': 'No response generated'})}\n\n"
+        finally:
+            if not task.done():
+                task.cancel()
+            if _active_turn_task is task:
+                _active_turn_task = None
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+@app.post("/api/chat/stop")
+async def chat_stop():
+    global _active_turn_task
+    task = _active_turn_task
+    if task and not task.done():
+        task.cancel()
+        logger.info("chat_turn_stopped")
+        return {"status": "stopped"}
+    return {"status": "idle"}
+
+
 @app.post("/api/approvals/{approval_id}/approve")
-async def approve_approval(approval_id: str):
+async def approve_approval(
+    approval_id: str, scope: str = "session", voice: bool = False
+):
     if not sage_app:
         return {"error": "SAGE not initialized", "status": "failed"}
     try:
-        response: AssistantResponse = await sage_app.approve_pending(approval_id)
-        return {"response": response.content, "status": "ok"}
+        response: AssistantResponse = await sage_app.approve_pending(
+            approval_id, scope=scope, voice=voice
+        )
+        pending = None
+        if response.pending_approval:
+            pending = dict(response.pending_approval)
+            pending.setdefault("id", pending.get("approval_id"))
+            tool_name = pending.get("tool_name", "")
+            resource = pending.get("resource") or ""
+            if tool_name == "run_command":
+                pending["description"] = f"Run command: {resource}"
+                pending["target"] = resource
+            elif tool_name in ("write_file", "patch"):
+                label = "Write file" if tool_name == "write_file" else "Patch file"
+                pending["description"] = f"{label}: {resource}"
+                pending["target"] = resource
+            else:
+                pending["description"] = f"Run {tool_name}"
+                pending["target"] = resource
+        return {
+            "response": response.content,
+            "status": "ok",
+            "scope": scope,
+            "pending_approval": pending,
+        }
     except Exception as e:
         logger.exception("approve_failed", approval_id=approval_id, error=e)
         return {"error": f"Approval failed: {e!s}", "status": "failed"}
 
 
 @app.post("/api/approvals/{approval_id}/deny")
-async def deny_approval(approval_id: str):
+async def deny_approval(approval_id: str, voice: bool = False):
     if not sage_app:
         return {"error": "SAGE not initialized", "status": "failed"}
     try:
-        response: AssistantResponse = await sage_app.deny_pending(approval_id)
+        response: AssistantResponse = await sage_app.deny_pending(
+            approval_id, voice=voice
+        )
         return {"response": response.content, "status": "ok"}
     except Exception as e:
         logger.exception("deny_failed", approval_id=approval_id, error=e)
@@ -566,6 +614,70 @@ async def list_scheduler_jobs():
             for j in jobs
         ]
     }
+
+
+@app.websocket("/ws/voice")
+async def voice_websocket_endpoint(websocket: WebSocket):
+    from app.feature_flags import voice_enabled
+    from app.voice.gateway import voice_endpoint
+
+    if not voice_enabled():
+        await websocket.accept()
+        await websocket.send_text(
+            json.dumps({"type": "error", "payload": "Voice not enabled"})
+        )
+        await websocket.close()
+        return
+    await voice_endpoint(websocket)
+
+
+@app.websocket("/ws/audio")
+async def audio_websocket_endpoint(websocket: WebSocket):
+    from app.application import get_sage_app
+    from app.feature_flags import voice_enabled
+
+    if not voice_enabled():
+        await websocket.accept()
+        await websocket.send_text(
+            json.dumps({"type": "error", "payload": "Voice not enabled"})
+        )
+        await websocket.close()
+        return
+
+    sage_app = get_sage_app()
+    if sage_app is None:
+        await websocket.accept()
+        await websocket.send_text(
+            json.dumps({"type": "error", "payload": "SAGE not initialized"})
+        )
+        await websocket.close()
+        return
+
+    await websocket.accept()
+    sage_app.audio_bus.subscribe(websocket)
+    try:
+        while True:
+            msg = await websocket.receive()
+            text = msg.get("text")
+            if not text:
+                continue
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            kind = data.get("type")
+            if kind in ("audio_played", "audio_failed"):
+                sage_app.audio_bus.confirm(
+                    str(data.get("id", "")),
+                    kind == "audio_played",
+                    data.get("error"),
+                )
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        sage_app.audio_bus.unsubscribe(websocket)
 
 
 @app.websocket("/ws/sage")

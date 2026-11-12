@@ -6,6 +6,8 @@ message table, so raw history stays permanent (ArchitectureV2 §30).
 """
 
 import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.config import settings
 from app.context.compressor import ContextCompressor, summary_row
@@ -171,28 +173,62 @@ class ContextBuilder:
         return filtered
 
     def _system_content(self) -> str:
-        """System prompt + bounded memory snapshot (name excluded)."""
+        """System prompt + live clock + bounded memory snapshot (name excluded)."""
 
-        if self.memory_store is None:
-            return self.system_prompt
+        parts = [self.system_prompt, self._now_section()]
 
-        memory = self.memory_store.load()
+        if self.memory_store is not None:
+            memory = self.memory_store.load()
 
-        if not memory:
-            return self.system_prompt
+            if memory:
+                # Filter out the user's name from the injected snapshot —
+                # the model must use "Sir" instead. The name remains in the
+                # memory file for factual "what is my name?" queries.
+                lines = []
+                for line in memory.splitlines():
+                    stripped = line.strip()
+                    lowered = stripped.lower()
+                    if lowered.startswith("name:") or lowered.startswith("- name:"):
+                        continue
+                    lines.append(line)
 
-        # Filter out the user's name from the injected snapshot —
-        # the model must use "Sir" instead. The name remains in the
-        # memory file for factual "what is my name?" queries.
-        lines = []
-        for line in memory.splitlines():
-            stripped = line.strip()
-            if stripped.lower().startswith("name:") or stripped.lower().startswith("- name:"):
-                continue
-            lines.append(line)
+                filtered = "\n".join(lines) if lines else "(no additional facts)"
+                parts.append(
+                    f"Known facts about the user (use when relevant):\n{filtered}"
+                )
 
-        filtered = "\n".join(lines) if lines else "(no additional facts)"
-        return f"{self.system_prompt}\n\nKnown facts about the user (use when relevant):\n{filtered}"  # noqa: E501
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _now() -> datetime:
+        """Current time in the configured timezone (falls back to local)."""
+
+        try:
+            tz = ZoneInfo(settings.timezone)
+        except (ZoneInfoNotFoundError, ValueError):
+            tz = datetime.now().astimezone().tzinfo
+        return datetime.now(tz)
+
+    def _now_section(self) -> str:
+        """A live clock, rebuilt on every turn."""
+
+        now = self._now()
+        offset = now.strftime("%z")
+        if offset:
+            offset = f"UTC{offset[:3]}:{offset[3:]}"
+            time_line = f"{now.strftime('%H:%M %Z')} ({offset})"
+        else:
+            time_line = now.strftime("%H:%M %Z")
+
+        return (
+            "## Current date and time\n"
+            f"- Date: {now.strftime('%A, %d %B %Y')}\n"
+            f"- Time: {time_line}\n"
+            f"- Timezone: {settings.timezone}\n"
+            "- This is the live clock at the moment this message is processed. "
+            "Treat it as authoritative for the current date, day, and time; it "
+            "refreshes every turn."
+        )
 
     @staticmethod
     def _to_api_message(row: dict) -> dict:

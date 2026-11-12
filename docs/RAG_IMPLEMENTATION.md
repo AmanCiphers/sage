@@ -1,5 +1,12 @@
 # RAG Implementation in SAGE — Complete Technical Document
 
+> **What this document contains:** A technical walkthrough of SAGE's hybrid
+> retrieval pipeline — how messages are embedded in the background, how FTS5
+> and vector search are queried and merged during context building, the exact
+> APIs and storage tables involved, timing, code locations, configuration,
+> edge cases, and how to verify it. It also notes the optional cross-encoder
+> reranker and how `session_search` differs from automatic RAG injection.
+
 ## Overview
 
 SAGE implements **Hybrid RAG** (FTS5 keyword search + vector embeddings) with **async, fire-and-forget embedding generation**. The RAG context is auto-injected into the system prompt on every turn.
@@ -170,7 +177,7 @@ Content-Type: application/json
     {"role": "system", "content": "Relevant context: [score=1.000] I use FastAPI..."},
     {"role": "user", "content": "What Python framework did I say I use?"}
   ],
-  "tools": [...],  // 20 tool definitions
+  "tools": [...],  // all registered tool definitions
   "stream": true,
   "temperature": 0.2
 }
@@ -213,6 +220,7 @@ data: {"choices":[{"delta":{}}],"usage":{"prompt_tokens":13703,"completion_token
 | EmbeddingProvider | `app/embeddings/provider.py` | `embed_query()`, `embed_passage()`, `embed_batch()` |
 | EmbeddingStore | `app/embeddings/store.py` | `save()`, `search()`, `has_embedding()` |
 | ContextBuilder | `app/context/builder.py` | `build()`, `_build_rag_context()`, `_merge_results()` |
+| Reranker | `app/reranker/provider.py` | `create_reranker()`, `rerank()` |
 | ConversationLoop | `app/conversation/loop.py` | `_run_turn()`, `handle_stream()` |
 | InferenceManager | `app/inference/manager.py` | `stream()`, `generate()` |
 
@@ -231,7 +239,19 @@ rag_exclude_recent_turns: int = 20
 rag_embedding_model: str = "nvidia/nemotron-3-embed-1b"
 rag_fallback_model: str = "Qwen/Qwen3-Embedding-8B"
 rag_embedding_dim: int = 1024
+
+# Optional cross-encoder reranker (disabled by default)
+rag_rerank_enabled: bool = False
+rag_rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+rag_rerank_top_n: int = 20
+rag_rerank_batch_size: int = 16
 ```
+
+The reranker is a second stage over the merged FTS5/embedding candidates. When
+`rag_rerank_enabled` is true (and `sentence-transformers` is installed),
+`ContextBuilder` calls `app/reranker/provider.py` and keeps the top
+`rag_rerank_top_n` by cross-encoder score; otherwise the weighted merge result
+is used unchanged.
 
 ---
 
@@ -271,6 +291,19 @@ python scripts/backfill_embeddings.py
 ```
 
 ---
+
+## Session search vs. automatic RAG
+
+These are related but distinct:
+
+- **Automatic RAG injection** happens inside `ContextBuilder.build()`: the
+  user's query retrieves hybrid results and they are injected into the prompt
+  without the model asking.
+- **`session_search`** is an explicit tool the model calls. It searches the
+  same conversation history (FTS5) and can also search **skills** and **memory
+  v2** entries when those are available
+  (`app/tools/session_search.py`). Use it when the model needs to look
+  something up rather than receiving it automatically.
 
 ## Summary
 

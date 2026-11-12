@@ -1,13 +1,12 @@
 from app.inference.models import ModelCapabilities, ModelMetadata
 
-
-# Primary chat model: Nebius DeepSeek-V4-Flash — fast, cheap, tool-capable.
+# Primary chat model: Nebius DeepSeek-V4.1-Flash — fast, cheap, tool-capable.
 # Reasoning=False keeps compaction/summary turns on the reasoning model.
 NEBIUS_MODELS = [
     ModelMetadata(
         provider="nebius",
-        model_id="deepseek-ai/DeepSeek-V4-Flash-0731",
-        context_window=131072,
+        model_id="deepseek-ai/DeepSeek-V4.1-Flash-1017",
+        context_window=1048000,
         capabilities=ModelCapabilities(
             tool_calling=True,
             reasoning=False,

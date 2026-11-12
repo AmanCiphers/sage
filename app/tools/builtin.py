@@ -1,9 +1,11 @@
 import json
 from datetime import datetime
-from typing import Any, List
+from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field
 
+from app.config import settings
 from app.permissions.detection import is_read_only_command
 from app.skills.tools import register_skill_tools
 
@@ -15,8 +17,16 @@ class CurrentTimeInput(ToolInput):
     pass
 
 
+def _now() -> datetime:
+    try:
+        tz = ZoneInfo(settings.timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        tz = datetime.now().astimezone().tzinfo
+    return datetime.now(tz)
+
+
 def get_current_time() -> str:
-    return datetime.now().astimezone().strftime(
+    return _now().strftime(
         "%Y-%m-%d %H:%M:%S %Z"
     )
 
@@ -26,7 +36,7 @@ class CurrentDateInput(ToolInput):
 
 
 def get_current_date() -> str:
-    return datetime.now().astimezone().strftime(
+    return _now().strftime(
         "%Y-%m-%d"
     )
 
@@ -35,6 +45,7 @@ class AssignTaskInput(ToolInput):
     worker: str
     objective: str
     auto_select: bool = False
+    force: bool = False
 
 
 class TaskStatusInput(ToolInput):
@@ -432,7 +443,12 @@ def register_builtin_tools(registry, supervisor=None) -> None:
             input_schema=RunOpenCodeInput,
             destructive=False,
             employee_eligible=True,
-            capabilities=[ToolCapability.EXECUTE, ToolCapability.WRITE, ToolCapability.READ, ToolCapability.NETWORK],
+            capabilities=[
+                ToolCapability.EXECUTE,
+                ToolCapability.WRITE,
+                ToolCapability.READ,
+                ToolCapability.NETWORK,
+            ],
             requires_approval=_agent_requires_approval,
             handler=run_opencode,
         )
@@ -497,9 +513,46 @@ def register_builtin_tools(registry, supervisor=None) -> None:
     if supervisor is None:
         return
 
-    async def assign_task(worker: str, objective: str, auto_select: bool = False) -> str:
+    async def assign_task(
+        worker: str,
+        objective: str,
+        auto_select: bool = False,
+        force: bool = False,
+    ) -> dict | str:
         """Assign an objective to a named employee; returns a task_id."""
-        if auto_select or worker.lower() == "auto":
+        auto = auto_select or worker.lower() == "auto"
+        target = supervisor._select_best_worker(objective) if auto else worker
+
+        if not force:
+            duplicate = await supervisor.find_duplicate(target, objective)
+            if duplicate is not None:
+                task = duplicate["task"]
+                if duplicate["reason"] == "active":
+                    return {
+                        "task_id": task["task_id"],
+                        "already_running": True,
+                        "status": task["status"],
+                        "message": (
+                            "A matching task is already in flight; reused it "
+                            "instead of creating a duplicate."
+                        ),
+                    }
+                return {
+                    "needs_confirmation": True,
+                    "previous_task": {
+                        "task_id": task["task_id"],
+                        "status": task["status"],
+                        "error": task.get("error"),
+                        "created_at": task.get("created_at"),
+                    },
+                    "message": (
+                        "A matching task failed recently. Ask the user whether "
+                        "to retry; call again with force=true only after they "
+                        "confirm."
+                    ),
+                }
+
+        if auto:
             return await supervisor.assign_auto(objective)
         return await supervisor.assign(
             worker=worker,
@@ -536,7 +589,11 @@ def register_builtin_tools(registry, supervisor=None) -> None:
                 "Assign an objective to a named employee (worker) and get a "
                 "task_id back immediately. The employee works in the "
                 "background so the conversation stays free. Use this for "
-                "substantial work. Check progress with task_status."
+                "substantial work, and only for the current request — do not "
+                "resume older requests without asking. Duplicate active tasks "
+                "are reused; a recently failed match returns "
+                "needs_confirmation, so ask the user before retrying with "
+                "force=true. Check progress with task_status."
             ),
             classification=ToolClassification.LOCAL_MUTATION,
             input_schema=AssignTaskInput,

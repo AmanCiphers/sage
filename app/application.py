@@ -10,11 +10,28 @@ from app.employees.supervisor import Supervisor
 from app.events.bus import EventBus
 from app.events.store import EventStore
 from app.execution.engine import ExecutionEngine
+from app.feature_flags import voice_enabled
 from app.inference.manager import InferenceManager
 from app.inference.models import ModelRequirements
 from app.inference.providers.factory import create_provider
 from app.inference.registry import ModelRegistry
 from app.inference.router import ModelRouter
+
+# Import interfaces for DI
+from app.interfaces import (
+    IAgentBackend,
+    IContextBuilder,
+    IConversationEngine,
+    IEventBus,
+    IInferenceManager,
+    IMemoryStore,
+    IPermissionEngine,
+    IProactiveEngine,
+    IScheduler,
+    IToolRegistry,
+    IVerification,
+    IWorkerPool,
+)
 from app.logging import get_logger
 from app.memory.store import MemoryStore
 from app.notifications.completion import CompletionNotifier
@@ -23,6 +40,7 @@ from app.operations.manager import OperationManager
 from app.permissions.approvals import ApprovalManager
 from app.permissions.engine import PermissionEngine
 from app.permissions.gate import ApprovalGate
+from app.permissions.risk import pattern_key_for
 from app.permissions.smart import get_smart_guardian
 from app.persistence.database import Database
 from app.persistence.schema import initialize_schema
@@ -37,23 +55,11 @@ from app.tools.memory_tools import register_memory_tools
 from app.tools.registry import ToolRegistry
 from app.tools.session_search import register_session_search
 from app.tools.shell_tools import register_shell_tools
+from app.tools.speak_tool import register_speak_tools
+from app.voice.audio_bus import AudioBus
+from app.voice.config import get_voice_config
+from app.voice.tts import make_tts
 from config.model_catalog import get_model_catalog
-
-# Import interfaces for DI
-from app.interfaces import (
-    IConversationEngine,
-    IContextBuilder,
-    IToolRegistry,
-    IPermissionEngine,
-    IWorkerPool,
-    IAgentBackend,
-    IMemoryStore,
-    IScheduler,
-    IProactiveEngine,
-    IEventBus,
-    IInferenceManager,
-    IVerification,
-)
 
 # Global SAGE application instance (set during startup)
 _sage_app: "SAGEApplication | None" = None
@@ -119,6 +125,11 @@ class SAGEApplication:
             self.tool_registry: IToolRegistry = ToolRegistry(toolset_profile=active_toolset)
         else:
             self.tool_registry: IToolRegistry = tool_registry
+
+        # Audio bus for voice output (broadcast WAV to connected clients)
+        self.audio_bus = AudioBus()
+        # TTS engine (lazy-initialized in start() if voice enabled)
+        self.tts = None
 
         self.model_registry = ModelRegistry()
 
@@ -191,6 +202,13 @@ class SAGEApplication:
         register_memory_tools(self.tool_registry, self.memory_store)
         register_session_search(self.tool_registry, self.message_store)
         register_investigation_tools(self.tool_registry)
+
+        # Register speak tool (voice output)
+        register_speak_tools(
+            self.tool_registry,
+            lambda: self.tts,
+            self.audio_bus,
+        )
 
         # Scheduler & Proactive
         self.scheduler_store = SchedulerStore(self.database)
@@ -383,15 +401,64 @@ class SAGEApplication:
         # For now, fall back to pending approval
         return ApprovalResponse(choice="cancelled", reason="Gateway not implemented")
 
+    async def speak_text(self, text: str, *, confirm: bool = False) -> bool | None:
+        """Synthesize and broadcast text aloud (voice-turn fallback).
+
+        With ``confirm=True`` waits for the browser's playback acknowledgement
+        and returns whether it was heard (``None`` when not confirming).
+        """
+        if self.tts is None:
+            return False if confirm else None
+        text = (text or "").strip()
+        if not text:
+            return False if confirm else None
+        heard: bool | None = None
+        chunks = 0
+        try:
+            if hasattr(self.tts, "synthesize_chunks"):
+                async for wav in self.tts.synthesize_chunks(text):
+                    delivery = await self.audio_bus.broadcast(
+                        wav, expect_ack=(confirm and chunks == 0)
+                    )
+                    if chunks == 0:
+                        heard = delivery.heard
+                    chunks += 1
+            else:
+                wav = await self.tts.synthesize(text)
+                delivery = await self.audio_bus.broadcast(
+                    wav, expect_ack=confirm
+                )
+                heard = delivery.heard
+        except Exception as exc:
+            message = f"{type(exc).__name__}: {exc}"
+            self.audio_bus.note_error(f"TTS failed: {message}")
+            self.logger.warning("voice_fallback_tts_failed error=%s", message)
+            return False if confirm else None
+        return heard if confirm else None
+
     async def approve_pending(
         self,
         approval_id: str,
         on_delta=None,
+        scope: str = "session",
+        voice: bool = False,
     ) -> "AssistantResponse":
         """Approve the bound action, execute it as an operation, then
-        feed the result back into the conversation."""
+        feed the result back into the conversation.
+
+        ``scope`` controls whether the approval is remembered:
+        ``once`` (this action only), ``session`` (tool + exact resource),
+        or ``permanent`` (persisted to SAGE_ALLOWLIST).
+        """
 
         approval = await self.approval_manager.approve(approval_id)
+
+        if scope in ("session", "permanent"):
+            key = pattern_key_for(approval["tool_name"], approval["arguments"])
+            if scope == "permanent":
+                self.permission_engine.allow_permanent(key)
+            else:
+                self.permission_engine.allow_session(key)
 
         operation = await self.operations.execute(
             approval["tool_name"],
@@ -412,22 +479,32 @@ class SAGEApplication:
 
         message = UserMessage(
             content=(
-                f"The user APPROVED the pending action "
+                f"The user approved the pending action "
                 f"({approval['tool_name']}). It was executed. "
-                f"Operation status: {operation['status']}. "
-                f"Result: {summary}. Confirm what was done."
+                f"Execution status: {operation['status']}. "
+                f"Result: {summary}. "
+                f"Continue the task you were working on and proceed to the "
+                f"next step. If an action needs the user's approval, stop at "
+                f"that approval and wait for it."
             )
         )
 
         if on_delta is not None:
-            return await self.conversation_engine.handle_stream(message, on_delta)
+            response = await self.conversation_engine.handle_stream(
+                message, on_delta, voice=voice
+            )
+            await self._speak_fallback(response, voice)
+            return response
 
-        return await self.conversation_engine.handle(message)
+        response = await self.conversation_engine.handle(message, voice=voice)
+        await self._speak_fallback(response, voice)
+        return response
 
     async def deny_pending(
         self,
         approval_id: str,
         on_delta=None,
+        voice: bool = False,
     ) -> "AssistantResponse":
         await self.approval_manager.deny(approval_id)
 
@@ -441,9 +518,25 @@ class SAGEApplication:
         )
 
         if on_delta is not None:
-            return await self.conversation_engine.handle_stream(message, on_delta)
+            response = await self.conversation_engine.handle_stream(
+                message, on_delta, voice=voice
+            )
+            await self._speak_fallback(response, voice)
+            return response
 
-        return await self.conversation_engine.handle(message)
+        response = await self.conversation_engine.handle(message, voice=voice)
+        await self._speak_fallback(response, voice)
+        return response
+
+    async def _speak_fallback(
+        self, response: "AssistantResponse", voice: bool
+    ) -> None:
+        if not voice or not response.content:
+            return
+        from app.tools.speak_tool import speak_was_called
+
+        if not speak_was_called():
+            await self.speak_text(response.content)
 
     async def start(self) -> None:
         set_sage_app(self)
@@ -482,6 +575,10 @@ class SAGEApplication:
         # Auto-authorize the main workspace so SAGE can access it without explicit permission
         from app.tools.workspace import authorize_workspace
         authorize_workspace(settings.workspace_path.expanduser().resolve())
+
+        # Initialize TTS if voice is enabled
+        if voice_enabled():
+            self.tts = make_tts(get_voice_config())
 
         recovered = await self.operations.recover()
         if recovered:

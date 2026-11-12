@@ -1,8 +1,22 @@
 # Plan — Replace Process-Worker with Worker-Employee System
 
-**Status:** approved direction, ready to implement (build mode).
+> **What this document contains:** The original design plan for replacing the
+> one-shot process-worker with in-process, goal-driven employees. It records
+> the locked decisions (N1–N10), the frozen `assign_task`/`task_status`/
+> `recover` contract, the phased build order, persistence/API changes, safety
+> limits, and the definition of done.
+>
+> **Status: IMPLEMENTED — historical design record (2026-10-21).** The direction
+> described here shipped as `app/employees/` and was recorded as **D28** in
+> [DECISIONS.md](DECISIONS.md). For how it actually works today, see
+> [HOW_IT_WORKS.md](HOW_IT_WORKS.md). Deviations from this plan: all five
+> employees are live (Asta, Otto, Tony, Alpha, Charlie) with per-role tool
+> allowlists; execution is in-process lazy `asyncio`; each employee has its own
+> DB, memory, and workspace under `data/employees/<key>/`. The process-worker
+> (`app/execution/worker.py`/`executor.py`) was deleted.
+
 **Companion docs:** [CHANGELOG.md](CHANGELOG.md) · [DECISIONS.md](DECISIONS.md) ·
-[HOW_IT_WORKS.md](HOW_IT_WORKS.md) · [../ArchitectureV2.md](../ArchitectureV2.md)
+[HOW_IT_WORKS.md](HOW_IT_WORKS.md) · [ArchitectureV2.md](ArchitectureV2.md)
 
 ---
 

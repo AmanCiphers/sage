@@ -20,7 +20,7 @@ def test_nebius_flash_is_primary_chat_model():
     models = get_model_catalog()
     by_id = {model.model_id: model for model in models}
 
-    nebius = by_id["deepseek-ai/DeepSeek-V4-Flash-0731"]
+    nebius = by_id["deepseek-ai/DeepSeek-V4.1-Flash-1017"]
     nvidia = by_id["openai/gpt-oss-20b"]
 
     assert nebius.provider == "nebius"
