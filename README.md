@@ -108,8 +108,8 @@ Then ask SAGE:
 | **Agent Backends** | ✅ | `run_opencode` (Nebius DeepSeek-V4-Flash), `run_hermes` — session resume |
 | **Verification** | ✅ | Deterministic re-checks: file content, patch diffs, exit codes |
 | **Crash Recovery** | ✅ | Startup recovers `UNKNOWN` tasks, reconciles operations, resumes sessions |
-| **Tests** | ✅ | 160 unit tests, scripted fake provider, live smoke test |
-| **Build/Lint** | ⚠️ | `npm run build` clean; no undefined names or shadowed definitions in `app` (7 `F` findings remain, all in the unused `app/permissions/utils.py`); ~280 remaining findings are whitespace/typing style — see CHANGELOG A48 |
+| **Tests** | ✅ | 245 unit tests, scripted fake provider, live smoke test |
+| **Build/Lint** | ⚠️ | CI gates the `F` ruleset (undefined names, unused imports, shadowed defs) — currently clean. ~250 remaining findings are whitespace/typing style, ratcheted separately so they never block a merge |
 
 ---
 
