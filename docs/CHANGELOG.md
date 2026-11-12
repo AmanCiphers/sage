@@ -36,6 +36,21 @@ section so they are never confused with shipped behavior.
 Changes from the web-UI integration work that were **not** recorded in
 `DECISIONS.md`.
 
+## A50 — Process-level crash recovery is now tested  *(2026-11-12)*
+
+- **Area:** Tests / Persistence / Operations
+- **Change:** `tests/unit/test_crash_recovery.py` spawns a child process that
+  writes a durable task and an `EXECUTING` operation, then kills itself with
+  `SIGKILL` — no `close()`, no unwinding, no recovery. The parent reopens the
+  database and asserts that `OperationManager.recover()` moves the operation
+  to `UNKNOWN`, `TaskStore.recover_stuck()` reconciles the queued task to
+  `unknown`, and committed rows survived the WAL write.
+- **Files:** `tests/unit/test_crash_recovery.py`
+- **Why:** Recovery was only tested by calling `recover()` in the same
+  process, which proves the SQL but not the premise — that a killed process
+  leaves state worth recovering. Crash-proofing is a headline claim; it should
+  be tested the way it fails.
+
 ## A49 — Hardline `rm` rule matched anywhere, not only at command position  *(2026-11-12)*
 
 - **Area:** Permissions
